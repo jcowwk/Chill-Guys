@@ -18,13 +18,21 @@ spring:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
-  feign:
-    hystrix:
-      enabled: true
-    client:
-      config:
-        default:
-          loggerLevel: full
+  # Feign 기본값(connect 10s / read 60s)이면 외부 장애 시 Kafka 컨슈머 스레드가 오래 묶이므로 호출 대상별 timeout 지정
+  # (기존 spring.feign.hystrix 설정은 경로가 잘못되었고 Hystrix 도 지원 종료되어 동작하지 않았음)
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 1000
+            readTimeout: 3000
+          ai-service:
+            connectTimeout: 1000
+            readTimeout: 7000   # ai-service 내부 Gemini readTimeout(5s) + 여유
+          slack-service:        # Slack Web API (SlackClient)
+            connectTimeout: 2000
+            readTimeout: 3000
 
   management:
     endpoints:
