@@ -165,20 +165,22 @@ public class ProductService {
 
     @Transactional
     public StockUpdateResponseDto reduceStock(UUID productId, Long quantity) {
-        Product product = (Product)this.productRepository.findById(productId).orElseThrow(() -> new RuntimeException("해당 상품 없음"));
-        boolean success = product.decreaseStock(quantity);
-        product.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
-        this.productRepository.save(product);
-        return new StockUpdateResponseDto(success);
+        // 조회 → 검사 → 차감 → 저장(check-then-act)은 동시 요청 시 같은 재고를 읽어 초과 판매와 차감 유실이 생긴다.
+        // 조건부 원자 UPDATE 로 DB 가 행 단위로 순서를 보장하게 한다.
+        int updated = this.productRepository.decreaseStock(productId, quantity);
+        if (updated == 0 && !this.productRepository.existsById(productId)) {
+            throw new RuntimeException("해당 상품 없음");
+        }
+        return new StockUpdateResponseDto(updated == 1);
     }
 
     @Transactional
     public StockUpdateResponseDto addStock(UUID productId, Long quantity) {
-        Product product = (Product)this.productRepository.findById(productId).orElseThrow(() -> new RuntimeException("해당 상품 없음"));
-        boolean success = product.increaseStock(quantity);
-        product.setUpdatedAt(new Timestamp(System.currentTimeMillis()));
-        this.productRepository.save(product);
-        return new StockUpdateResponseDto(success);
+        int updated = this.productRepository.increaseStock(productId, quantity);
+        if (updated == 0) {
+            throw new RuntimeException("해당 상품 없음");
+        }
+        return new StockUpdateResponseDto(true);
     }
 
     public UUID getHubIdByProductId(UUID productId) {

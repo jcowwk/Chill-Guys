@@ -29,21 +29,6 @@ public class Product {
     private Timestamp deletedAt;
     private Long deletedBy;
 
-    public boolean decreaseStock(Long quantity) {
-        if (this.stock >= quantity) {
-            this.stock = this.stock - quantity;
-            log.info("가능");
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    public boolean increaseStock(Long quantity) {
-        this.stock = this.stock + quantity;
-        return true;
-    }
-
     @Generated
     public static ProductBuilder builder() {
         return new ProductBuilder();
