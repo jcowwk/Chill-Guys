@@ -48,9 +48,10 @@ class OutboxPublisherTest {
         when(kafkaTemplate.send(any(ProducerRecord.class)))
                 .thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
 
-        int published = publisher.publishPendingEvents();
+        PublishResult result = publisher.publishPendingEvents();
 
-        assertThat(published).isEqualTo(1);
+        assertThat(result.published()).isEqualTo(1);
+        assertThat(result.failed()).isFalse();
         assertThat(event.getStatus()).isEqualTo(OutboxStatus.PUBLISHED);
 
         ArgumentCaptor<ProducerRecord<String, String>> captor = ArgumentCaptor.forClass(ProducerRecord.class);
@@ -63,21 +64,50 @@ class OutboxPublisherTest {
     }
 
     @Test
-    void 브로커_장애시_이벤트는_PENDING_으로_남고_나머지_발행은_다음_주기로_미룬다() {
+    void 브로커_응답_실패시_모든_이벤트는_PENDING_으로_남아_재시도된다() {
         OutboxEvent first = newEvent();
         OutboxEvent second = newEvent();
         when(repository.findPublishableForUpdate(any(), anyInt())).thenReturn(List.of(first, second));
         when(kafkaTemplate.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.failedFuture(
                 new KafkaException("send failed", new org.apache.kafka.common.errors.TimeoutException("broker down"))));
 
-        int published = publisher.publishPendingEvents();
+        PublishResult result = publisher.publishPendingEvents();
 
-        assertThat(published).isZero();
-        assertThat(first.getStatus()).isEqualTo(OutboxStatus.PENDING);
+        assertThat(result.published()).isZero();
+        assertThat(result.failed()).isTrue();
+        assertThat(result.hasMore()).isFalse();
+        for (OutboxEvent e : List.of(first, second)) {
+            assertThat(e.getStatus()).isEqualTo(OutboxStatus.PENDING);
+            assertThat(e.getRetryCount()).isEqualTo(1);
+            assertThat(e.getNextRetryAt()).isAfter(LocalDateTime.now());
+        }
+    }
+
+    @Test
+    void 브로커_연결_불가로_send_가_즉시_실패하면_나머지는_보내지_않고_다음_주기로_미룬다() {
+        OutboxEvent first = newEvent();
+        OutboxEvent second = newEvent();
+        when(repository.findPublishableForUpdate(any(), anyInt())).thenReturn(List.of(first, second));
+        when(kafkaTemplate.send(any(ProducerRecord.class))).thenThrow(
+                new KafkaException("metadata", new org.apache.kafka.common.errors.TimeoutException("not present in metadata")));
+
+        PublishResult result = publisher.publishPendingEvents();
+
+        assertThat(result.failed()).isTrue();
         assertThat(first.getRetryCount()).isEqualTo(1);
-        assertThat(first.getNextRetryAt()).isAfter(LocalDateTime.now());
         assertThat(second.getRetryCount()).isZero();
+        assertThat(second.getStatus()).isEqualTo(OutboxStatus.PENDING);
         verify(kafkaTemplate, times(1)).send(any(ProducerRecord.class));
+    }
+
+    @Test
+    void 배치가_가득차면_hasMore_로_연속_발행을_알린다() {
+        publisher = new OutboxPublisher(repository, kafkaTemplate, 2, 1000, 1, 5000, 300000);
+        when(repository.findPublishableForUpdate(any(), anyInt())).thenReturn(List.of(newEvent(), newEvent()));
+        when(kafkaTemplate.send(any(ProducerRecord.class)))
+                .thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
+
+        assertThat(publisher.publishPendingEvents().hasMore()).isTrue();
     }
 
     @Test

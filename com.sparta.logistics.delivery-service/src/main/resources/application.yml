@@ -13,6 +13,8 @@ spring:
       ddl-auto: ${DDL_AUTO}
   kafka:
     bootstrap-servers: ${KAFKA_SERVER_URL:localhost:9092}
+    admin:
+      operation-timeout: 10s   # Kafka 미기동 시 토픽 생성 확인 때문에 기동이 오래 지연되지 않도록
   task:
     scheduling:
       pool:
@@ -32,9 +34,15 @@ eureka:
 outbox:
   relay:
     fixed-delay-ms: 3000      # 발행 주기
-    batch-size: 100
+    batch-size: 500           # 부하 테스트: 100 → 761/s, 500 → 1100/s, 1000 → 1152/s
+    max-drain-ms: 10000       # 적체 시 한 주기에 연속 발행하는 최대 시간
     send-timeout-ms: 20000    # max.block(5s) + delivery.timeout(10s) 보다 길게
     max-retries: 10           # 영구 오류(직렬화/메시지 크기 등)일 때만 적용, 브로커 장애는 무기한 재시도
     base-backoff-ms: 5000
     max-backoff-ms: 300000
     retention-days: 7         # PUBLISHED 이벤트 보관 기간
+
+kafka:
+  topic:
+    partitions: 3   # = slack-service 컨슈머 병렬 처리 상한
+    replicas: 1     # 운영(브로커 3대 이상)에서는 3 권장

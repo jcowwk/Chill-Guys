@@ -39,6 +39,13 @@ public class ConsumerApplicationKafkaConfig {
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
 
+    /** 리스너당 컨슈머 스레드 수. 토픽 파티션 수 이하로 (초과분은 놀게 됨) */
+    @Value("${kafka.consumer.concurrency:3}")
+    private int concurrency;
+
+    @Value("${kafka.consumer.max-poll-records:10}")
+    private int maxPollRecords;
+
     @Value("${kafka.consumer.retry.max-retries:3}")
     private int maxRetries;
 
@@ -68,6 +75,9 @@ public class ConsumerApplicationKafkaConfig {
         configProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         // 컨슈머 그룹이 처음 생성될 때 그 전에 쌓인 메시지를 놓치지 않도록
         configProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        // 한 번 poll 한 레코드를 max.poll.interval.ms(5분) 안에 다 처리해야 그룹에서 쫓겨나지 않는다.
+        // 알림 1건이 외부 API 5회 호출(+재시도)이라 느려질 수 있으므로 기본값 500 대신 작게 가져온다.
+        configProps.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, maxPollRecords);
 
         return new DefaultKafkaConsumerFactory<>(configProps);
     }
@@ -78,6 +88,8 @@ public class ConsumerApplicationKafkaConfig {
         ConcurrentKafkaListenerContainerFactory<String, DeliveryInfoDto> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
+        // 파티션별 병렬 처리 (부하 테스트: 1 스레드 12.8건/s → 3 스레드 37.2건/s)
+        factory.setConcurrency(concurrency);
         factory.setCommonErrorHandler(kafkaErrorHandler);
         // 레코드 단위 커밋: 장애 시 재처리 범위를 최소화
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.RECORD);

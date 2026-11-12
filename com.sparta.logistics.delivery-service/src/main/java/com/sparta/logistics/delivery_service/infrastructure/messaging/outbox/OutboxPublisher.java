@@ -14,7 +14,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -41,7 +43,7 @@ public class OutboxPublisher {
 
     public OutboxPublisher(OutboxEventRepository outboxEventRepository,
                            KafkaTemplate<String, String> outboxKafkaTemplate,
-                           @Value("${outbox.relay.batch-size:100}") int batchSize,
+                           @Value("${outbox.relay.batch-size:500}") int batchSize,
                            @Value("${outbox.relay.send-timeout-ms:20000}") long sendTimeoutMs,
                            @Value("${outbox.relay.max-retries:10}") int maxRetries,
                            @Value("${outbox.relay.base-backoff-ms:5000}") long baseBackoffMs,
@@ -56,29 +58,48 @@ public class OutboxPublisher {
     }
 
     /**
-     * @return 이번 주기에 발행 성공한 이벤트 수
+     * 배치 단위로 발행한다.
+     * 이벤트마다 send().get() 으로 왕복을 기다리면 처리량이 브로커 RTT 에 묶이므로(부하 테스트 기준 30 events/s),
+     * 배치 전체를 비동기로 보낸 뒤 결과를 모아서 확인한다. (idempotent producer 라 파티션 내 순서는 유지)
      */
     @Transactional
-    public int publishPendingEvents() {
+    public PublishResult publishPendingEvents() {
         List<OutboxEvent> events = outboxEventRepository.findPublishableForUpdate(LocalDateTime.now(), batchSize);
-        int published = 0;
+        if (events.isEmpty()) {
+            return PublishResult.empty(batchSize);
+        }
 
+        // 1) 전송: send() 자체가 실패(메타데이터 timeout = 브로커 연결 불가)하면 남은 이벤트는 보내지 않는다
+        List<CompletableFuture<?>> futures = new ArrayList<>(events.size());
         for (OutboxEvent event : events) {
             try {
-                outboxKafkaTemplate.send(toRecord(event)).get(sendTimeoutMs, TimeUnit.MILLISECONDS);
+                futures.add(outboxKafkaTemplate.send(toRecord(event)));
+            } catch (Exception e) {
+                futures.add(CompletableFuture.failedFuture(e));
+                break;
+            }
+        }
+
+        // 2) 확인: 브로커 ack 를 받은 이벤트만 PUBLISHED, 나머지는 재시도 예약
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(sendTimeoutMs);
+        int published = 0;
+        boolean failed = false;
+        for (int i = 0; i < futures.size(); i++) {
+            OutboxEvent event = events.get(i);
+            try {
+                futures.get(i).get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
                 event.markPublished(LocalDateTime.now());
                 published++;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 handleFailure(event, e);
-                break;
+                failed = true;
             } catch (Exception e) {
                 handleFailure(event, e);
-                // 브로커 장애일 가능성이 높으므로 남은 이벤트는 다음 주기로 미룬다 (장애 중 불필요한 대기/부하 방지)
-                break;
+                failed = true;
             }
         }
-        return published;
+        return new PublishResult(events.size(), published, failed, batchSize);
     }
 
     @Transactional

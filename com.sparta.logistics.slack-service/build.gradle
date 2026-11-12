@@ -37,6 +37,12 @@ dependencies {
 	annotationProcessor 'org.projectlombok:lombok'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+	// 통합 테스트: 실제 Kafka/PostgreSQL 컨테이너 (Docker 없으면 skip)
+	testImplementation 'org.testcontainers:junit-jupiter'
+	testImplementation 'org.testcontainers:kafka'
+	testImplementation 'org.testcontainers:postgresql'
+	testImplementation 'org.awaitility:awaitility'
 	implementation 'org.springframework.kafka:spring-kafka'
 }
 
@@ -47,5 +53,22 @@ dependencyManagement {
 }
 
 tasks.named('test') {
-	useJUnitPlatform()
+	useJUnitPlatform {
+		excludeTags 'load'
+	}
+}
+
+// 부하 테스트 (Docker 필요): ./gradlew loadTest
+tasks.register('loadTest', Test) {
+	description = 'Kafka 컨슈머 부하/외부 API 지연 테스트 (TPS, 지연 측정)'
+	group = 'verification'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform {
+		includeTags 'load'
+	}
+	testLogging {
+		showStandardStreams = true
+	}
+	outputs.upToDateWhen { false }
 }

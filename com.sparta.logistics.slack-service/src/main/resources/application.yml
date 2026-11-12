@@ -40,6 +40,8 @@ spring:
   kafka:
     # 컨슈머/DLT 프로듀서/토픽 생성(KafkaAdmin) 공통 주소
     bootstrap-servers: ${KAFKA_SERVER_URL:localhost:9092}
+    admin:
+      operation-timeout: 10s   # Kafka 미기동 시 DLT 토픽 생성 확인 때문에 기동이 오래 지연되지 않도록
 
 server:
   port: 19099
@@ -60,6 +62,8 @@ slack:
 # Kafka 컨슈머 장애 대응: 지수 백오프 재시도 후 <topic>.DLT 로 격리
 kafka:
   consumer:
+    concurrency: 3          # 리스너당 스레드 수 (= delivery-service kafka.topic.partitions 이하)
+    max-poll-records: 10    # 느린 외부 API 로 max.poll.interval(5분) 초과 → 리밸런스 폭주 방지
     retry:
       max-retries: 3
       initial-interval-ms: 1000

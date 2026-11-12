@@ -26,15 +26,26 @@ public class OutboxRelay {
     @Value("${outbox.relay.retention-days:7}")
     private int retentionDays;
 
+    /** 한 주기에 적체분을 연속으로 비우는 최대 시간 (다른 인스턴스/스케줄과 공정하게) */
+    @Value("${outbox.relay.max-drain-ms:10000}")
+    private long maxDrainMs;
+
     private volatile boolean shutdown = false;
 
     @Scheduled(fixedDelayString = "${outbox.relay.fixed-delay-ms:3000}")
     public void relay() {
         if (shutdown) return;
         try {
-            int published = outboxPublisher.publishPendingEvents();
-            if (published > 0) {
-                log.debug("[Outbox] {}건 발행", published);
+            // 배치가 가득 찼으면 적체가 남은 것이므로 다음 주기를 기다리지 않고 이어서 발행 (drain)
+            long deadline = System.currentTimeMillis() + maxDrainMs;
+            int total = 0;
+            PublishResult result;
+            do {
+                result = outboxPublisher.publishPendingEvents();
+                total += result.published();
+            } while (result.hasMore() && !shutdown && System.currentTimeMillis() < deadline);
+            if (total > 0) {
+                log.debug("[Outbox] {}건 발행", total);
             }
         } catch (Exception e) {
             // DB 장애 등 - 다음 주기에 다시 시도
