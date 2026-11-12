@@ -46,3 +46,10 @@ kafka:
   topic:
     partitions: 3   # = slack-service 컨슈머 병렬 처리 상한
     replicas: 1     # 운영(브로커 3대 이상)에서는 3 권장
+
+# 배송 담당자 배정 스케줄러 (건별 트랜잭션)
+delivery:
+  assignment:
+    batch-size: 200       # 한 번에 조회하는 대기 건 수 (ID 만 조회)
+    max-run-ms: 50000     # 한 번 실행의 최대 시간 (스케줄 주기 60초보다 짧게)
+    concurrency: 4        # 동시 처리 수 (건별 커밋이라 순차 처리 시 처리량 1/3 - 부하 테스트)

@@ -1,7 +1,6 @@
 package com.sparta.logistics.delivery_service.application.service;
 
 import com.sparta.logistics.delivery_service.application.dto.request.DeliveryRouteUpdateRequestDto;
-import com.sparta.logistics.delivery_service.application.dto.response.DeliveryManagerInfoDto;
 import com.sparta.logistics.delivery_service.application.dto.response.DeliveryRouteResponseDto;
 import com.sparta.logistics.delivery_service.application.dto.response.HubRouteListResponseDto;
 import com.sparta.logistics.delivery_service.application.mapper.DeliveryRouteMapper;
@@ -11,16 +10,17 @@ import com.sparta.logistics.delivery_service.domain.model.DeliveryRouteStatus;
 import com.sparta.logistics.delivery_service.domain.repository.DeliveryRouteRepository;
 import com.sparta.logistics.delivery_service.exception.CustomException;
 import com.sparta.logistics.delivery_service.exception.DeliveryErrorCode;
-import com.sparta.logistics.delivery_service.infrastructure.client.DeliveryManagerClient;
 import com.sparta.logistics.delivery_service.infrastructure.client.HubRouteClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
 
 
 @Slf4j
@@ -30,7 +30,14 @@ public class DeliveryRouteService {
 
     private final DeliveryRouteRepository deliveryRouteRepository;
     private final HubRouteClient hubRouteClient;
-    private final DeliveryManagerClient deliveryManagerClient;
+    private final DeliveryAssignmentProcessor deliveryAssignmentProcessor;
+    private final ExecutorService deliveryAssignmentExecutor;
+
+    @Value("${delivery.assignment.batch-size:200}")
+    private int assignmentBatchSize;
+
+    @Value("${delivery.assignment.max-run-ms:50000}")
+    private long assignmentMaxRunMs;
 
     @Transactional
     public void createDeliveryRoutes(Delivery delivery) {
@@ -106,20 +113,10 @@ public class DeliveryRouteService {
     }
 
 
-    @Transactional
-    public void assignPendingDeliveries() {
-        List<DeliveryRoute> pendingDeliveryies = deliveryRouteRepository.findByStatusAndDeletedAtIsNull(DeliveryRouteStatus.PENDING);
-
-        if(!pendingDeliveryies.isEmpty()) {
-            for(DeliveryRoute deliveryRoute : pendingDeliveryies) {
-                UUID startHubId = deliveryRoute.getStartHudId();
-                UUID endHubId = deliveryRoute.getEndHudId();
-                DeliveryManagerInfoDto dto = deliveryManagerClient.assignDeliveryManager(startHubId, endHubId, "COMPANY");
-                deliveryRoute.assignHubDeliveryManager(dto.getId());
-
-                log.info("HubDeliveryManager Assigned");
-            }
-        }
+    /** 배정 대기 배송경로를 건별 트랜잭션으로 처리한다 (트랜잭션 경계는 DeliveryAssignmentProcessor). */
+    public PendingAssignmentLoop.Result assignPendingDeliveries() {
+        return PendingAssignmentLoop.run("RouteAssign", assignmentBatchSize, assignmentMaxRunMs, deliveryAssignmentExecutor,
+                deliveryRouteRepository::findPendingRefsAfter, deliveryAssignmentProcessor::assignRoute);
     }
 
     @Transactional

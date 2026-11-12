@@ -10,7 +10,9 @@ import java.util.UUID;
 
 @Entity
 @Getter
-@Table(name = "p_delivery")
+@Table(name = "p_delivery",
+        // 배정 스케줄러가 대기 건을 (상태, 생성 시각) 순으로 조회
+        indexes = @Index(name = "idx_delivery_status_created", columnList = "delivery_status, created_at"))
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Delivery extends BaseTimeEntity{
 
