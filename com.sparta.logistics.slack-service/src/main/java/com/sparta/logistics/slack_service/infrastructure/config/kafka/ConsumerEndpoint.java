@@ -23,13 +23,13 @@ public class ConsumerEndpoint {
 
     @KafkaListener(groupId = "hub", topics = KafkaTopics.HUB)
     public void hubListen(ConsumerRecord<String, DeliveryInfoDto> record) {
-        log.info("카프카에서 받아온 HUB 메세지: " + record.value());
+        log.debug("HUB 메시지 수신 partition={}, offset={}", record.partition(), record.offset());
         handle(record);
     }
 
     @KafkaListener(groupId = "company", topics = KafkaTopics.COMPANY)
     public void listen(ConsumerRecord<String, DeliveryInfoDto> record) {
-        log.info("카프카에서 받아온 COMPANY 메세지: " + record.value());
+        log.debug("COMPANY 메시지 수신 partition={}, offset={}", record.partition(), record.offset());
         handle(record);
     }
 

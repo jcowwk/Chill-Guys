@@ -152,9 +152,7 @@ public class SlackService {
             String slackMessage = circuitBreakerFactory.create(ResilienceConfig.SLACK).run(
                     () -> slackClient.sendSlackMessage("Bearer " + SLACK_BOT_TOKEN, dto));
 
-            log.info("dto-channel: " + dto.getChannel());
-            log.info("dto-text: " + dto.getText());
-            log.info("slack에 dto 보냈음" + slackMessage);
+            log.debug("Slack 메시지 발송 id={}", id);
 
             ObjectMapper objectMapper = new ObjectMapper();
             JsonNode responseJson = objectMapper.readTree(slackMessage);
@@ -165,7 +163,7 @@ public class SlackService {
                 responseText = "Slack API 오류 발생: " + slackMessage;
             }
         } catch (Exception e) {
-            log.error("Slack 메시지 발송 실패 id={}, channel={}: {}", id, slackId, e.toString());
+            log.error("Slack 메시지 발송 실패 id={}: {}", id, e.toString());
             responseText = "Slack API 호출 중 예외 발생";
         }
 
