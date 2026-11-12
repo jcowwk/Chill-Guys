@@ -3,6 +3,7 @@ package com.sparta.logistics.slack_service.domain.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -16,7 +17,8 @@ import java.time.LocalDateTime;
  */
 @Getter
 @Entity
-@Table(name = "p_processed_event")
+@Table(name = "p_processed_event",
+        indexes = @Index(name = "idx_processed_event_processed_at", columnList = "processed_at"))
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class ProcessedEvent {
 
@@ -27,7 +29,7 @@ public class ProcessedEvent {
     @Column(nullable = false)
     private String topic;
 
-    @Column(nullable = false)
+    @Column(name = "processed_at", nullable = false)
     private LocalDateTime processedAt;
 
     public ProcessedEvent(String eventId, String topic, LocalDateTime processedAt) {

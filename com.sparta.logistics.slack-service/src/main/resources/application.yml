@@ -72,7 +72,12 @@ kafka:
   consumer:
     concurrency: 3          # 리스너당 스레드 수 (= delivery-service kafka.topic.partitions 이하)
     max-poll-records: 10    # 느린 외부 API 로 max.poll.interval(5분) 초과 → 리밸런스 폭주 방지
+    processed-event:
+      retention-days: 7     # 멱등 처리 이력 보관 기간 (Kafka 토픽 retention 이상이어야 함)
     retry:
       max-retries: 3
       initial-interval-ms: 1000
       max-interval-ms: 10000
+  dlt:
+    replay:
+      max-replay-count: 3   # 같은 메시지를 DLT 에서 재투입할 수 있는 최대 횟수 (무한 루프 방지)
