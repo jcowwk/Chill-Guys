@@ -78,6 +78,8 @@ public class OutboxEvent {
         this.status = OutboxStatus.PUBLISHED;
         this.publishedAt = now;
         this.lastError = null;
+        // 발행이 끝난 이벤트는 다시 보낼 일이 없으므로 본문(주소 등 개인정보)을 남기지 않는다
+        this.payload = "";
     }
 
     /**

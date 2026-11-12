@@ -66,5 +66,15 @@ class OutboxEventTest {
         assertThat(event.getStatus()).isEqualTo(OutboxStatus.PUBLISHED);
         assertThat(event.getPublishedAt()).isEqualTo(now);
         assertThat(event.getLastError()).isNull();
+        assertThat(event.getPayload()).isEmpty();
+    }
+
+    @Test
+    void 발행_전과_실패_상태에서는_본문을_유지한다() {
+        OutboxEvent event = OutboxEvent.create(UUID.randomUUID(), "HUB", "{\"address\":\"서울\"}", now);
+        event.recordFailure("too large", false, 1, BASE, MAX, now);
+
+        assertThat(event.getStatus()).isEqualTo(OutboxStatus.FAILED);
+        assertThat(event.getPayload()).contains("서울");
     }
 }
