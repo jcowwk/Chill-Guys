@@ -5,6 +5,7 @@ import com.sparta.logistics.delivery_service.application.dto.request.DeliveryUpd
 import com.sparta.logistics.delivery_service.application.dto.response.DeliveryManagerInfoDto;
 import com.sparta.logistics.delivery_service.application.dto.response.DeliveryResponseDto;
 import com.sparta.logistics.delivery_service.infrastructure.messaging.dto.DeliveryInfoMapper;
+import com.sparta.logistics.delivery_service.infrastructure.messaging.outbox.OutboxEventRecorder;
 import com.sparta.logistics.delivery_service.application.mapper.DeliveryMapper;
 import com.sparta.logistics.delivery_service.domain.model.Delivery;
 import com.sparta.logistics.delivery_service.domain.model.DeliveryStatus;
@@ -35,7 +36,7 @@ public class DeliveryService {
     private final CompanyClient companyClient;
     private final ProductClient productClient;
 
-    private final ProducerService producerService;
+    private final OutboxEventRecorder outboxEventRecorder;
 
     @Transactional
     public UUID createDelivery(OrderDeliveryRequestDto orderDeliveryRequestDto) {
@@ -105,8 +106,10 @@ public class DeliveryService {
 
                 log.info("DeliveryManager Assigned");
 
-                // 배송정보를 kafka로 전송
-                producerService.sendInfo(type, DeliveryInfoMapper.toDto(delivery, dto.getSlackId(), delivery.getRecipientCompany().getAddress()));
+                // 배송정보를 Outbox 에 기록 (배송 상태 변경과 같은 트랜잭션으로 커밋 → Kafka 장애 시에도 유실 없음)
+                // 실제 Kafka 발행은 OutboxRelay 가 비동기로 수행
+                outboxEventRecorder.record(delivery.getId(), type,
+                        DeliveryInfoMapper.toDto(delivery, dto.getSlackId(), delivery.getRecipientCompany().getAddress()));
             }
         }
     }

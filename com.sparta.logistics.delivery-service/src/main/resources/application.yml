@@ -12,10 +12,11 @@ spring:
     hibernate:
       ddl-auto: ${DDL_AUTO}
   kafka:
-    bootstrap-servers: ${KAFKA_SERVER_URL}
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+    bootstrap-servers: ${KAFKA_SERVER_URL:localhost:9092}
+  task:
+    scheduling:
+      pool:
+        size: 3   # 배송 배정 스케줄러와 Outbox 릴레이가 서로를 막지 않도록 분리
 
 server:
   port: 19094
@@ -26,3 +27,14 @@ eureka:
     fetch-registry: true
     service-url:
       defaultZone: http://${EUREKA_URL}/eureka/
+
+# Transactional Outbox 릴레이 설정
+outbox:
+  relay:
+    fixed-delay-ms: 3000      # 발행 주기
+    batch-size: 100
+    send-timeout-ms: 20000    # max.block(5s) + delivery.timeout(10s) 보다 길게
+    max-retries: 10           # 영구 오류(직렬화/메시지 크기 등)일 때만 적용, 브로커 장애는 무기한 재시도
+    base-backoff-ms: 5000
+    max-backoff-ms: 300000
+    retention-days: 7         # PUBLISHED 이벤트 보관 기간

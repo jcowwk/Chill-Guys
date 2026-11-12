@@ -38,11 +38,8 @@ spring:
         enabled: true
 
   kafka:
-    consumer:
-      bootstrap-servers: localhost:9092
-      group-id: my-consumer-group
-      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    # 컨슈머/DLT 프로듀서/토픽 생성(KafkaAdmin) 공통 주소
+    bootstrap-servers: ${KAFKA_SERVER_URL:localhost:9092}
 
 server:
   port: 19099
@@ -59,3 +56,11 @@ slack:
     token: ${SLACK_BOT_TOKEN}
   api:
     url: ${SLACK_API_URL}
+
+# Kafka 컨슈머 장애 대응: 지수 백오프 재시도 후 <topic>.DLT 로 격리
+kafka:
+  consumer:
+    retry:
+      max-retries: 3
+      initial-interval-ms: 1000
+      max-interval-ms: 10000
