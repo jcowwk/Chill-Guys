@@ -138,8 +138,10 @@ eureka:
 logging:
   level:
     root: INFO
-    org.springframework.security: DEBUG
-    com.sparta.logistics.gateway.security: DEBUG
+    # 요청마다 DEBUG 로그를 남기면 부하 테스트 30분 만에 로그가 1.7GB 가 되고 CPU 를 잡아먹는다.
+    # 디버깅이 필요할 때만 일시적으로 DEBUG 로 올린다.
+    org.springframework.security: INFO
+    com.sparta.logistics.gateway.security: INFO
 
 jwt:
   secret:
