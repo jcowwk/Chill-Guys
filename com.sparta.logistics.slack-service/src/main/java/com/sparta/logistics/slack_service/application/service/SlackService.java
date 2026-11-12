@@ -6,12 +6,14 @@ import com.sparta.logistics.slack_service.application.dto.request.SlackMessageSe
 import com.sparta.logistics.slack_service.application.dto.response.SlackMessageSaveResponseDto;
 import com.sparta.logistics.slack_service.domain.entity.Slack;
 import com.sparta.logistics.slack_service.infrastructure.client.*;
+import com.sparta.logistics.slack_service.infrastructure.config.ResilienceConfig;
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
 import com.sparta.logistics.slack_service.infrastructure.dto.HubResponseDto;
 import com.sparta.logistics.slack_service.domain.repository.SlackRepository;
 import com.sparta.logistics.slack_service.infrastructure.dto.OrderSlackDto;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
 import org.springframework.stereotype.Service;
 
 import java.sql.Timestamp;
@@ -20,6 +22,9 @@ import java.util.UUID;
 @Slf4j
 @Service
 public class SlackService {
+
+    // AI 장애 시에도 배송 알림은 나가도록 사용하는 대체 문구
+    static final String AI_FALLBACK_TEXT = "AI 예측 불가 (담당자 확인 필요)";
 
     @Value("${slack.bot.token}")
     private String SLACK_BOT_TOKEN;
@@ -30,14 +35,16 @@ public class SlackService {
     private final HubClient hubClient;
     private final OrderClient orderClient;
     private final ProductClient productClient;
+    private final CircuitBreakerFactory<?, ?> circuitBreakerFactory;
 
-    public SlackService(SlackRepository slackRepository, AiClient aiClient, SlackClient slackClient, HubClient hubClient, OrderClient orderClient, ProductClient productClient) {
+    public SlackService(SlackRepository slackRepository, AiClient aiClient, SlackClient slackClient, HubClient hubClient, OrderClient orderClient, ProductClient productClient, CircuitBreakerFactory<?, ?> circuitBreakerFactory) {
         this.slackRepository = slackRepository;
         this.aiClient = aiClient;
         this.slackClient = slackClient;
         this.hubClient = hubClient;
         this.orderClient = orderClient;
         this.productClient = productClient;
+        this.circuitBreakerFactory = circuitBreakerFactory;
     }
 
     public SlackMessageSaveResponseDto saveSlackMessage(DeliveryInfoDto deliveryResponseDto) {
@@ -50,7 +57,13 @@ public class SlackService {
         String inputForAI = convertDeliveryInfoToString(deliveryResponseDto, hubStartResponseDto, hubEndResponseDto);
 
         // 3. string 으로 AI api에 전달하여 최종 발송 시한 응답값 받기
-        String output = aiClient.generateCompletion(inputForAI);
+        //    AI(Gemini) 지연/장애가 알림 발송 실패로 번지지 않도록 서킷 브레이커 + fallback 으로 격리
+        String output = circuitBreakerFactory.create(ResilienceConfig.AI).run(
+                () -> aiClient.generateCompletion(inputForAI),
+                throwable -> {
+                    log.warn("AI 배송일 예측 실패, 대체 문구로 발송: {}", throwable.toString());
+                    return AI_FALLBACK_TEXT;
+                });
 
         // 주문 상품 정보 추가
         OrderSlackDto orderSlackDto = orderClient.getOrderInfo(deliveryResponseDto.getOrderId());
@@ -123,6 +136,7 @@ public class SlackService {
 
         if (slack == null) {
             log.info("슬랙 데이터 없음");
+            return;
         }
 
         String messageText = slack.getText();
@@ -134,7 +148,9 @@ public class SlackService {
                 .build();
 
         try {
-            String slackMessage = slackClient.sendSlackMessage("Bearer " + SLACK_BOT_TOKEN, dto);
+            // Slack 장애가 지속되면 서킷을 열어 매 요청마다 timeout 까지 기다리지 않고 즉시 실패
+            String slackMessage = circuitBreakerFactory.create(ResilienceConfig.SLACK).run(
+                    () -> slackClient.sendSlackMessage("Bearer " + SLACK_BOT_TOKEN, dto));
 
             log.info("dto-channel: " + dto.getChannel());
             log.info("dto-text: " + dto.getText());
@@ -149,7 +165,7 @@ public class SlackService {
                 responseText = "Slack API 오류 발생: " + slackMessage;
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            log.error("Slack 메시지 발송 실패 id={}, channel={}: {}", id, slackId, e.toString());
             responseText = "Slack API 호출 중 예외 발생";
         }
 
