@@ -8,6 +8,7 @@ import com.sparta.logistics.slack_service.infrastructure.config.ResilienceConfig
 import feign.FeignException;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
 import org.springframework.stereotype.Component;
@@ -42,17 +43,48 @@ public class SlackSender {
     private final SlackRateLimiter rateLimiter;
     private final String botToken;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final Duration maxRateLimitWait;
 
     public SlackSender(SlackClient slackClient, CircuitBreakerFactory<?, ?> circuitBreakerFactory,
                        SlackRateLimiter rateLimiter, @Value("${slack.bot.token}") String botToken) {
+        this(slackClient, circuitBreakerFactory, rateLimiter, botToken, Duration.ofSeconds(20));
+    }
+
+    @Autowired
+    public SlackSender(SlackClient slackClient, CircuitBreakerFactory<?, ?> circuitBreakerFactory,
+                       SlackRateLimiter rateLimiter, @Value("${slack.bot.token}") String botToken,
+                       @Value("${slack.rate-limit.max-wait-ms:20000}") Duration maxRateLimitWait) {
         this.slackClient = slackClient;
         this.circuitBreakerFactory = circuitBreakerFactory;
         this.rateLimiter = rateLimiter;
         this.botToken = botToken;
+        this.maxRateLimitWait = maxRateLimitWait;
     }
 
-    /** 성공하면 정상 반환, 실패하면 SlackRetryableException 또는 SlackPermanentException */
+    /**
+     * 성공하면 정상 반환, 실패하면 SlackRetryableException 또는 SlackPermanentException.
+     *
+     * 429 는 Kafka 재시도로 넘기지 않고 여기서 Retry-After 만큼 기다렸다가 다시 보낸다.
+     * Kafka 재시도(총 7초)보다 채널이 밀린 시간이 길면 DLT 로 가 버리기 때문이다 (부하 테스트에서 확인).
+     * 총 대기가 최대 대기 시간을 넘으면 그때 재시도 예외로 넘긴다.
+     */
     public void send(UUID messageId, String channel, String text) {
+        long deadline = System.nanoTime() + maxRateLimitWait.toNanos();
+        while (true) {
+            try {
+                sendOnce(messageId, channel, text);
+                return;
+            } catch (SlackRateLimitedException e) {
+                rateLimiter.pause(channel, e.getRetryAfter());
+                if (System.nanoTime() + e.getRetryAfter().toNanos() > deadline) {
+                    throw e;
+                }
+                log.debug("Slack 429 - {}초 후 같은 메시지 재발송 channel 대기", e.getRetryAfter().toSeconds());
+            }
+        }
+    }
+
+    private void sendOnce(UUID messageId, String channel, String text) {
         rateLimiter.acquire(channel);
 
         SlackMessageSendRequestDto request = SlackMessageSendRequestDto.builder()
@@ -60,14 +92,24 @@ public class SlackSender {
         String body;
         try {
             body = circuitBreakerFactory.create(ResilienceConfig.SLACK).run(
-                    () -> slackClient.sendSlackMessage("Bearer " + botToken, request),
+                    () -> {
+                        try {
+                            return slackClient.sendSlackMessage("Bearer " + botToken, request);
+                        } catch (FeignException e) {
+                            if (e.status() == 429) {
+                                // 서킷 브레이커가 실패로 세지 않도록 전용 예외로 바꿔서 던진다
+                                throw new SlackRateLimitedException(retryAfter(e.responseHeaders()));
+                            }
+                            throw e;
+                        }
+                    },
                     throwable -> { throw asRuntime(throwable); });
+        } catch (SlackRetryableException | SlackPermanentException e) {
+            throw e;
         } catch (FeignException e) {
             throw classifyHttpFailure(e, channel);
         } catch (CallNotPermittedException e) {
             throw new SlackRetryableException("Slack 서킷 열림 - 잠시 후 재시도", e);
-        } catch (SlackRetryableException | SlackPermanentException e) {
-            throw e;
         } catch (RuntimeException e) {
             // 시간 초과 등 원인을 특정할 수 없는 실패는 다시 시도해 본다
             throw new SlackRetryableException("Slack 호출 실패: " + e.getClass().getSimpleName(), e);
@@ -78,9 +120,7 @@ public class SlackSender {
     private RuntimeException classifyHttpFailure(FeignException e, String channel) {
         int status = e.status();
         if (status == 429) {
-            Duration retryAfter = retryAfter(e.responseHeaders());
-            rateLimiter.pause(channel, retryAfter);
-            return new SlackRetryableException("Slack 호출 한도 초과(429), " + retryAfter.toSeconds() + "초 후 재시도", e);
+            return new SlackRateLimitedException(retryAfter(e.responseHeaders()));
         }
         if (status < 0 || status >= 500 || status == 408) {
             return new SlackRetryableException("Slack 일시 오류(HTTP " + status + ")", e);
@@ -100,7 +140,7 @@ public class SlackSender {
         }
         String error = json == null ? "empty_response" : json.path("error").asText("unknown_error");
         if ("ratelimited".equals(error)) {
-            rateLimiter.pause(channel, DEFAULT_RETRY_AFTER);
+            throw new SlackRateLimitedException(DEFAULT_RETRY_AFTER);
         }
         if (TRANSIENT_ERRORS.contains(error)) {
             throw new SlackRetryableException("Slack 일시 오류: " + error);

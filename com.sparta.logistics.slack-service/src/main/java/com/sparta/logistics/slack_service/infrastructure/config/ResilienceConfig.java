@@ -1,5 +1,6 @@
 package com.sparta.logistics.slack_service.infrastructure.config;
 
+import com.sparta.logistics.slack_service.infrastructure.slack.SlackRateLimitedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.timelimiter.TimeLimiterConfig;
 import org.springframework.cloud.circuitbreaker.resilience4j.Resilience4JCircuitBreakerFactory;
@@ -31,9 +32,19 @@ public class ResilienceConfig {
                     .timeLimiterConfig(timeLimiter(Duration.ofSeconds(8))), AI);
 
             factory.configure(builder -> builder
-                    .circuitBreakerConfig(circuitBreakerConfig())
+                    .circuitBreakerConfig(slackCircuitBreakerConfig())
                     .timeLimiterConfig(timeLimiter(Duration.ofSeconds(5))), SLACK);
         };
+    }
+
+    /**
+     * Slack 은 호출 한도 초과(429)를 장애로 보지 않는다.
+     * 429 까지 실패로 세면, 한 채널로 알림이 몰릴 때 서킷이 30초 열려 모든 발송이 막힌다 (부하 테스트에서 확인).
+     */
+    private CircuitBreakerConfig slackCircuitBreakerConfig() {
+        return CircuitBreakerConfig.from(circuitBreakerConfig())
+                .ignoreExceptions(SlackRateLimitedException.class)
+                .build();
     }
 
     private CircuitBreakerConfig circuitBreakerConfig() {
