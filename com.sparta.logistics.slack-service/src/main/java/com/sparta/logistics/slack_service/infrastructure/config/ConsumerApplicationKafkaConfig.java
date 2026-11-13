@@ -2,6 +2,7 @@ package com.sparta.logistics.slack_service.infrastructure.config;
 
 import com.sparta.logistics.slack_service.infrastructure.config.kafka.KafkaTopics;
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
+import com.sparta.logistics.slack_service.infrastructure.slack.SlackPermanentException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -116,6 +117,8 @@ public class ConsumerApplicationKafkaConfig {
         backOff.setMaxInterval(maxIntervalMs);
 
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, backOff);
+        // 다시 보내도 성공하지 않는 Slack 오류(채널 없음, 토큰 오류 등)는 재시도 없이 바로 DLT 로
+        errorHandler.addNotRetryableExceptions(SlackPermanentException.class);
         errorHandler.setRetryListeners((record, ex, deliveryAttempt) ->
                 log.warn("[Kafka] 메시지 처리 실패, 재시도 {}회차 topic={}, offset={}, error={}",
                         deliveryAttempt, record.topic(), record.offset(), ex.toString()));

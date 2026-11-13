@@ -3,6 +3,7 @@ package com.sparta.logistics.slack_service.domain.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import lombok.*;
 
@@ -14,7 +15,8 @@ import java.util.UUID;
 @AllArgsConstructor
 @Builder
 @Entity
-@Table(name = "p_slack")
+@Table(name = "p_slack",
+        indexes = @Index(name = "uk_slack_event_id", columnList = "event_id", unique = true))
 public class Slack {
     @Id
     private UUID id;
@@ -25,4 +27,15 @@ public class Slack {
     private String text;
     private Timestamp createdAt;
     private Long createdBy;
+
+    /** Kafka 이벤트 ID. 재시도/재처리 때 이미 만든 알림을 다시 만들지 않고 재사용하기 위함 */
+    @Column(name = "event_id", length = 64)
+    private String eventId;
+
+    /** Slack 발송 완료 시각. 값이 있으면 다시 보내지 않는다 */
+    private Timestamp sentAt;
+
+    public void markSent(Timestamp at) {
+        this.sentAt = at;
+    }
 }

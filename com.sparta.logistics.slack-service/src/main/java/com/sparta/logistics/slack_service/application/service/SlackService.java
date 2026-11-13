@@ -1,8 +1,5 @@
 package com.sparta.logistics.slack_service.application.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sparta.logistics.slack_service.application.dto.request.SlackMessageSendRequestDto;
 import com.sparta.logistics.slack_service.application.dto.response.SlackMessageSaveResponseDto;
 import com.sparta.logistics.slack_service.domain.entity.Slack;
 import com.sparta.logistics.slack_service.infrastructure.client.*;
@@ -11,12 +8,13 @@ import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
 import com.sparta.logistics.slack_service.infrastructure.dto.HubResponseDto;
 import com.sparta.logistics.slack_service.domain.repository.SlackRepository;
 import com.sparta.logistics.slack_service.infrastructure.dto.OrderSlackDto;
+import com.sparta.logistics.slack_service.infrastructure.slack.SlackSender;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
 import org.springframework.stereotype.Service;
 
 import java.sql.Timestamp;
+import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -26,28 +24,68 @@ public class SlackService {
     // AI 장애 시에도 배송 알림은 나가도록 사용하는 대체 문구
     static final String AI_FALLBACK_TEXT = "AI 예측 불가 (담당자 확인 필요)";
 
-    @Value("${slack.bot.token}")
-    private String SLACK_BOT_TOKEN;
-
     private final SlackRepository slackRepository;
     private final AiClient aiClient;
-    private final SlackClient slackClient;
     private final HubClient hubClient;
     private final OrderClient orderClient;
     private final ProductClient productClient;
     private final CircuitBreakerFactory<?, ?> circuitBreakerFactory;
+    private final SlackSender slackSender;
 
-    public SlackService(SlackRepository slackRepository, AiClient aiClient, SlackClient slackClient, HubClient hubClient, OrderClient orderClient, ProductClient productClient, CircuitBreakerFactory<?, ?> circuitBreakerFactory) {
+    public SlackService(SlackRepository slackRepository, AiClient aiClient, HubClient hubClient, OrderClient orderClient, ProductClient productClient, CircuitBreakerFactory<?, ?> circuitBreakerFactory, SlackSender slackSender) {
         this.slackRepository = slackRepository;
         this.aiClient = aiClient;
-        this.slackClient = slackClient;
         this.hubClient = hubClient;
         this.orderClient = orderClient;
         this.productClient = productClient;
         this.circuitBreakerFactory = circuitBreakerFactory;
+        this.slackSender = slackSender;
     }
 
+    /**
+     * HTTP API(/api/slack/save) 용: 알림을 만들어 저장하고 발송한다.
+     * 발송 실패는 응답을 막지 않도록 로그로만 남긴다 (기존 동작 유지).
+     */
     public SlackMessageSaveResponseDto saveSlackMessage(DeliveryInfoDto deliveryResponseDto) {
+        Slack slack = saveNew(deliveryResponseDto, null);
+        sendSlackMessage(slack.getId(), slack.getSlackId());
+        return SlackMessageSaveResponseDto.builder()
+                .id(slack.getId())
+                .slackId(slack.getSlackId())
+                .text(slack.getText())
+                .build();
+    }
+
+    /**
+     * Kafka 알림 처리: 실패하면 예외를 던져 컨슈머가 재시도하거나 DLT 로 보내게 한다.
+     *
+     * - 같은 eventId 로 이미 만든 알림이 있으면 다시 만들지 않는다 (재시도 때 AI 재호출, 중복 저장 방지)
+     * - 이미 발송된 알림이면 다시 보내지 않는다
+     */
+    public void processNotification(DeliveryInfoDto delivery, String eventId) {
+        Slack slack = (eventId == null ? Optional.<Slack>empty() : slackRepository.findByEventId(eventId))
+                .orElseGet(() -> saveNew(delivery, eventId));
+        if (slack.getSentAt() != null) {
+            return;
+        }
+        slackSender.send(slack.getId(), slack.getSlackId(), slack.getText());
+        slack.markSent(new Timestamp(System.currentTimeMillis()));
+        slackRepository.save(slack);
+    }
+
+    private Slack saveNew(DeliveryInfoDto delivery, String eventId) {
+        Slack slack = Slack.builder()
+                .id(UUID.randomUUID())
+                .slackId(delivery.getSlackId())
+                .text(buildSlackText(delivery))
+                .createdAt(new Timestamp(System.currentTimeMillis()))
+                .eventId(eventId)
+                .build();
+        return slackRepository.save(slack);
+    }
+
+    /** 허브·주문·상품·AI 정보를 모아 알림 문구를 만든다 (외부 API 호출 포함) */
+    private String buildSlackText(DeliveryInfoDto deliveryResponseDto) {
 
         // 1. hubId로 hub 주소 찾기
         HubResponseDto hubStartResponseDto = hubClient.getAddressByHubId(deliveryResponseDto.getDepartureHubId());
@@ -80,24 +118,7 @@ public class SlackService {
         // 4. Slack message string 생성 (AI 응답 포함해서)
         String slackText = buildSlackText(deliveryResponseDto, hubStartResponseDto, hubEndResponseDto, output, orderId, quantity, productId, productName);
 
-        // 5. Slack entity 저장
-        Slack slack = Slack.builder()
-                .id(UUID.randomUUID())
-                .slackId(deliveryResponseDto.getSlackId())
-                .text(slackText)
-                .createdAt(new Timestamp(System.currentTimeMillis()))
-                .build();
-
-        slackRepository.save(slack);
-
-        sendSlackMessage(slack.getId(), slack.getSlackId());
-
-        // 6. 저장된 메시지 DTO로 반환
-        return SlackMessageSaveResponseDto.builder()
-                .id(slack.getId())
-                .slackId(slack.getSlackId())
-                .text(slack.getText())
-                .build();
+        return slackText;
     }
 
     private String convertDeliveryInfoToString(DeliveryInfoDto deliveryDto, HubResponseDto hubStartResponseDto, HubResponseDto hubEndResponseDto) {
@@ -129,43 +150,20 @@ public class SlackService {
         return sb.toString();
     }
 
+    /** HTTP API(/api/slack/send) 용: 저장된 알림을 발송한다. 실패는 로그로만 남긴다 (기존 동작 유지). */
     public void sendSlackMessage(UUID id, String slackId) {
-        String responseText = "";
-
         Slack slack = slackRepository.findById(id).orElse(null);
-
         if (slack == null) {
             log.info("슬랙 데이터 없음");
             return;
         }
-
-        String messageText = slack.getText();
-
-        SlackMessageSendRequestDto dto = SlackMessageSendRequestDto.builder()
-                .id(slack.getId())
-                .channel(slackId)
-                .text(messageText)
-                .build();
-
         try {
-            // Slack 장애가 지속되면 서킷을 열어 매 요청마다 timeout 까지 기다리지 않고 즉시 실패
-            String slackMessage = circuitBreakerFactory.create(ResilienceConfig.SLACK).run(
-                    () -> slackClient.sendSlackMessage("Bearer " + SLACK_BOT_TOKEN, dto));
-
+            slackSender.send(slack.getId(), slackId, slack.getText());
+            slack.markSent(new Timestamp(System.currentTimeMillis()));
+            slackRepository.save(slack);
             log.debug("Slack 메시지 발송 id={}", id);
-
-            ObjectMapper objectMapper = new ObjectMapper();
-            JsonNode responseJson = objectMapper.readTree(slackMessage);
-
-            if (responseJson.get("ok").asBoolean()) {
-                responseText = "Message sent successfully!";
-            } else {
-                responseText = "Slack API 오류 발생: " + slackMessage;
-            }
         } catch (Exception e) {
             log.error("Slack 메시지 발송 실패 id={}: {}", id, e.toString());
-            responseText = "Slack API 호출 중 예외 발생";
         }
-
     }
 }

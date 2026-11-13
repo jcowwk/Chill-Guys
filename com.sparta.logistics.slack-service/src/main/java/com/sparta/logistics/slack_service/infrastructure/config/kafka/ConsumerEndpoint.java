@@ -45,7 +45,7 @@ public class ConsumerEndpoint {
             return;
         }
 
-        slackService.saveSlackMessage(record.value());
+        slackService.processNotification(record.value(), eventId);
 
         if (eventId != null) {
             markProcessed(eventId, record.topic());

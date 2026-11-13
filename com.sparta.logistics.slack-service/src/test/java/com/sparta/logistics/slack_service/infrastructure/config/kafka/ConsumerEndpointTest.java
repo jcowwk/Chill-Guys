@@ -43,7 +43,7 @@ class ConsumerEndpointTest {
 
         endpoint.handle(record("e1"));
 
-        verify(slackService).saveSlackMessage(any());
+        verify(slackService).processNotification(any(), any());
         verify(processedEventRepository).save(any(ProcessedEvent.class));
     }
 
@@ -61,14 +61,14 @@ class ConsumerEndpointTest {
     void eventId_헤더가_없는_기존_메시지도_처리한다() {
         endpoint.handle(record(null));
 
-        verify(slackService).saveSlackMessage(any());
+        verify(slackService).processNotification(any(), any());
         verify(processedEventRepository, never()).save(any());
     }
 
     @Test
     void 처리_실패시_예외를_전파하여_재시도_DLT_대상이_되고_처리완료로_기록하지_않는다() {
         when(processedEventRepository.existsById("e1")).thenReturn(false);
-        doThrow(new RuntimeException("hub-service down")).when(slackService).saveSlackMessage(any());
+        doThrow(new RuntimeException("hub-service down")).when(slackService).processNotification(any(), any());
 
         assertThatThrownBy(() -> endpoint.handle(record("e1"))).isInstanceOf(RuntimeException.class);
         verify(processedEventRepository, never()).save(any());
@@ -81,6 +81,6 @@ class ConsumerEndpointTest {
 
         endpoint.handle(record("e1")); // 예외 없이 종료
 
-        verify(slackService, times(1)).saveSlackMessage(any());
+        verify(slackService, times(1)).processNotification(any(), any());
     }
 }

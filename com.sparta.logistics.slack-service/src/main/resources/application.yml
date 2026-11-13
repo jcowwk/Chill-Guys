@@ -64,6 +64,10 @@ eureka:
 slack:
   bot:
     token: ${SLACK_BOT_TOKEN}
+  # Slack chat.postMessage 호출 한도(채널당 대략 초당 1건)에 맞춘 발송 간격
+  rate-limit:
+    per-channel-interval-ms: 1000
+    max-wait-ms: 20000          # 이보다 오래 기다려야 하면 재시도로 넘김 (컨슈머 스레드를 오래 잡지 않도록)
   api:
     url: ${SLACK_API_URL}
 
