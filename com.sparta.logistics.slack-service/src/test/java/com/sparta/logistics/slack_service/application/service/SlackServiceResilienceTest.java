@@ -8,6 +8,9 @@ import com.sparta.logistics.slack_service.infrastructure.config.ResilienceConfig
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
 import com.sparta.logistics.slack_service.infrastructure.dto.HubResponseDto;
 import com.sparta.logistics.slack_service.infrastructure.dto.OrderSlackDto;
+import com.sparta.logistics.slack_service.infrastructure.slack.SlackRateLimiter;
+import com.sparta.logistics.slack_service.infrastructure.slack.SlackRetryableException;
+import com.sparta.logistics.slack_service.infrastructure.slack.SlackSender;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.timelimiter.TimeLimiterConfig;
@@ -28,6 +31,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
@@ -128,11 +132,37 @@ class SlackServiceResilienceTest {
         verify(slackRepository).save(any(Slack.class));
     }
 
+    @Test
+    @DisplayName("Kafka 알림: Slack 발송 실패는 예외로 알리고, 재시도 때 알림을 다시 만들지 않으며 성공하면 다시 보내지 않는다")
+    void processNotification_retryReusesMessage_andDoesNotResend() {
+        when(aiClient.generateCompletion(anyString())).thenReturn("2025-03-28에 도착할 예정입니다.");
+        when(slackRepository.findByEventId(anyString())).thenAnswer(inv -> store.values().stream()
+                .filter(sl -> inv.getArgument(0).equals(sl.getEventId())).findFirst());
+        when(slackClient.sendSlackMessage(anyString(), any()))
+                .thenReturn("{\"ok\":false,\"error\":\"internal_error\"}")
+                .thenReturn("{\"ok\":true}");
+        SlackService slackService = slackService(productionFactory());
+        DeliveryInfoDto delivery = delivery();
+
+        // 1차: 발송 실패 → 예외 (컨슈머가 재시도하도록)
+        assertThatThrownBy(() -> slackService.processNotification(delivery, "event-1"))
+                .isInstanceOf(SlackRetryableException.class);
+        // 2차(재시도): 저장된 알림을 재사용해서 발송 성공
+        slackService.processNotification(delivery, "event-1");
+        // 3차(중복 수신): 이미 보냈으므로 아무것도 하지 않음
+        slackService.processNotification(delivery, "event-1");
+
+        assertThat(store).hasSize(1);
+        assertThat(store.values().iterator().next().getSentAt()).isNotNull();
+        verify(aiClient, times(1)).generateCompletion(anyString());
+        verify(hubClient, times(2)).getAddressByHubId(any());
+        verify(slackClient, times(2)).sendSlackMessage(anyString(), any());
+    }
+
     private SlackService slackService(Resilience4JCircuitBreakerFactory factory) {
-        SlackService slackService = new SlackService(slackRepository, aiClient, slackClient, hubClient, orderClient, productClient, factory,
-                new com.sparta.logistics.slack_service.infrastructure.monitoring.NotificationMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
-        ReflectionTestUtils.setField(slackService, "SLACK_BOT_TOKEN", "test-token");
-        return slackService;
+        // 테스트에서는 채널별 발송 간격을 두지 않는다
+        SlackSender sender = new SlackSender(slackClient, factory, new SlackRateLimiter(0, 1000), "test-token");
+        return new SlackService(slackRepository, aiClient, hubClient, orderClient, productClient, factory, sender);
     }
 
     private Resilience4JCircuitBreakerFactory productionFactory() {

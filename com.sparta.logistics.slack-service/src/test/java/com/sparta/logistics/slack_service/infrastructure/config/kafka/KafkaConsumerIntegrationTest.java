@@ -3,6 +3,7 @@ package com.sparta.logistics.slack_service.infrastructure.config.kafka;
 import com.sparta.logistics.slack_service.application.service.SlackService;
 import com.sparta.logistics.slack_service.domain.repository.ProcessedEventRepository;
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
+import com.sparta.logistics.slack_service.infrastructure.slack.SlackPermanentException;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -115,12 +116,12 @@ class KafkaConsumerIntegrationTest {
 
         send(KafkaTopics.HUB, "delivery-1", json(orderId), Map.of(KafkaTopics.EVENT_ID_HEADER, eventId));
 
-        verify(slackService, timeout(30_000)).saveSlackMessage(argThat(dto ->
+        verify(slackService, timeout(30_000)).processNotification(argThat(dto ->
                 orderId.equals(dto.getOrderId())
                         && "U-SLACK".equals(dto.getSlackId())
                         && "서울시".equals(dto.getAddress())
                         && Long.valueOf(7L).equals(dto.getDeliveryManagerId())
-                        && dto.getProductId() != null));
+                        && dto.getProductId() != null), any());
         await().atMost(Duration.ofSeconds(10)).until(() -> processedEventRepository.existsById(eventId));
     }
 
@@ -136,8 +137,8 @@ class KafkaConsumerIntegrationTest {
         send(KafkaTopics.HUB, key, json(sentinel), Map.of(KafkaTopics.EVENT_ID_HEADER, UUID.randomUUID().toString()));
 
         // sentinel 이 처리됐다면 앞의 중복 메시지도 모두 처리(skip)된 상태
-        verify(slackService, timeout(30_000)).saveSlackMessage(orderIdIs(sentinel));
-        verify(slackService, times(1)).saveSlackMessage(orderIdIs(orderId));
+        verify(slackService, timeout(30_000)).processNotification(orderIdIs(sentinel), any());
+        verify(slackService, times(1)).processNotification(orderIdIs(orderId), any());
     }
 
     @Test
@@ -147,7 +148,7 @@ class KafkaConsumerIntegrationTest {
         send(KafkaTopics.HUB, null, json(orderId), Map.of("__TypeId__",
                 "com.sparta.logistics.delivery_service.infrastructure.messaging.dto.DeliveryInfoDto"));
 
-        verify(slackService, timeout(30_000)).saveSlackMessage(orderIdIs(orderId));
+        verify(slackService, timeout(30_000)).processNotification(orderIdIs(orderId), any());
     }
 
     @Test
@@ -156,7 +157,7 @@ class KafkaConsumerIntegrationTest {
 
         send(KafkaTopics.COMPANY, "company-1", json(orderId), Map.of(KafkaTopics.EVENT_ID_HEADER, UUID.randomUUID().toString()));
 
-        verify(slackService, timeout(30_000)).saveSlackMessage(orderIdIs(orderId));
+        verify(slackService, timeout(30_000)).processNotification(orderIdIs(orderId), any());
     }
 
     @Test
@@ -164,21 +165,39 @@ class KafkaConsumerIntegrationTest {
         UUID failingOrderId = UUID.randomUUID();
         UUID nextOrderId = UUID.randomUUID();
         String eventId = UUID.randomUUID().toString();
-        when(slackService.saveSlackMessage(orderIdIs(failingOrderId)))
-                .thenThrow(new RuntimeException("hub-service 장애"));
+        doThrow(new RuntimeException("hub-service 장애")).when(slackService).processNotification(orderIdIs(failingOrderId), any());
 
         send(KafkaTopics.HUB, "delivery-fail", json(failingOrderId), Map.of(KafkaTopics.EVENT_ID_HEADER, eventId));
         send(KafkaTopics.HUB, "delivery-fail", json(nextOrderId), Map.of(KafkaTopics.EVENT_ID_HEADER, UUID.randomUUID().toString()));
 
         // 최초 1회 + 재시도 3회 후 다음 메시지로 진행 (컨슈머가 막히지 않음)
-        verify(slackService, timeout(30_000)).saveSlackMessage(orderIdIs(nextOrderId));
-        verify(slackService, times(4)).saveSlackMessage(orderIdIs(failingOrderId));
+        verify(slackService, timeout(30_000)).processNotification(orderIdIs(nextOrderId), any());
+        verify(slackService, times(4)).processNotification(orderIdIs(failingOrderId), any());
 
         ConsumerRecord<String, byte[]> dlt = pollDlt(r -> header(r, KafkaTopics.EVENT_ID_HEADER).equals(eventId));
         assertThat(new String(dlt.value(), StandardCharsets.UTF_8)).contains(failingOrderId.toString());
         assertThat(header(dlt, "kafka_dlt-original-topic")).isEqualTo(KafkaTopics.HUB);
         assertThat(header(dlt, "kafka_dlt-exception-message")).contains("hub-service 장애");
         // 실패한 이벤트는 처리완료로 기록되지 않아 DLT 재처리 시 다시 처리 가능
+        assertThat(processedEventRepository.existsById(eventId)).isFalse();
+    }
+
+    @Test
+    void Slack_설정_오류같은_영구_실패는_재시도_없이_바로_DLT_로_보낸다() {
+        UUID orderId = UUID.randomUUID();
+        UUID nextOrderId = UUID.randomUUID();
+        String eventId = UUID.randomUUID().toString();
+        doThrow(new SlackPermanentException("Slack 발송 거부: channel_not_found"))
+                .when(slackService).processNotification(orderIdIs(orderId), any());
+
+        send(KafkaTopics.HUB, "delivery-perm", json(orderId), Map.of(KafkaTopics.EVENT_ID_HEADER, eventId));
+        send(KafkaTopics.HUB, "delivery-perm", json(nextOrderId), Map.of(KafkaTopics.EVENT_ID_HEADER, UUID.randomUUID().toString()));
+
+        verify(slackService, timeout(30_000)).processNotification(orderIdIs(nextOrderId), any());
+        verify(slackService, times(1)).processNotification(orderIdIs(orderId), any()); // 재시도 없음
+
+        ConsumerRecord<String, byte[]> dlt = pollDlt(r -> header(r, KafkaTopics.EVENT_ID_HEADER).equals(eventId));
+        assertThat(header(dlt, "kafka_dlt-exception-message")).contains("channel_not_found");
         assertThat(processedEventRepository.existsById(eventId)).isFalse();
     }
 
@@ -191,7 +210,7 @@ class KafkaConsumerIntegrationTest {
         send(KafkaTopics.HUB, "delivery-poison", poison, Map.of(KafkaTopics.EVENT_ID_HEADER, poisonEventId));
         send(KafkaTopics.HUB, "delivery-poison", json(nextOrderId), Map.of(KafkaTopics.EVENT_ID_HEADER, UUID.randomUUID().toString()));
 
-        verify(slackService, timeout(30_000)).saveSlackMessage(orderIdIs(nextOrderId));
+        verify(slackService, timeout(30_000)).processNotification(orderIdIs(nextOrderId), any());
 
         ConsumerRecord<String, byte[]> dlt = pollDlt(r -> header(r, KafkaTopics.EVENT_ID_HEADER).equals(poisonEventId));
         assertThat(dlt.value()).isEqualTo(poison);

@@ -52,9 +52,17 @@ groups:
         annotations:
           summary: "AI(Gemini) 서킷 열림 - 알림이 대체 문구로 발송 중"
 
-      - alert: SlackSendFailures
-        # Slack 발송 실패는 재시도 없이 넘어가므로 알림이 실제로 전달되지 않았을 수 있다
-        expr: sum(increase(slack_send_failures_total[5m])) > 0
+      - alert: SlackPermanentFailure
+        # 채널 없음, 토큰 오류 등 설정 문제. 재시도 없이 DLT 로 격리되므로 원인을 고친 뒤 재처리해야 한다
+        expr: sum(increase(slack_send_failures_total{type="permanent"}[5m])) > 0
         labels: { severity: critical }
         annotations:
-          summary: "최근 5분간 Slack 발송 실패 {{ $value | humanize }}건 - 알림 미전달 가능성"
+          summary: "Slack 발송 거부 {{ $value | humanize }}건 (설정 오류) - 채널/토큰 확인 후 DLT 재처리"
+
+      - alert: SlackRateLimited
+        # 429 는 Retry-After 를 지켜 재시도하므로 유실은 없지만, 잦으면 알림이 늦어진다
+        expr: sum(increase(slack_ratelimited_total[5m])) > 20
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Slack 호출 한도 초과 {{ $value | humanize }}회/5분 - 알림 지연 중 (인스턴스 수, 채널별 발송량 확인)"

@@ -16,7 +16,7 @@ public class NotificationMetrics {
     private final Counter duplicate;
     private final Counter retry;
     private final Counter aiFallback;
-    private final Counter slackSendFailure;
+    private final Counter slackRateLimited;
 
     public NotificationMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -24,7 +24,7 @@ public class NotificationMetrics {
         this.duplicate = Counter.builder("slack.notification.duplicate").description("이미 처리해서 건너뛴 알림 (중복 수신)").register(registry);
         this.retry = Counter.builder("slack.notification.retry").description("처리 실패 후 재시도").register(registry);
         this.aiFallback = Counter.builder("slack.ai.fallback").description("AI 실패로 대체 문구 발송").register(registry);
-        this.slackSendFailure = Counter.builder("slack.send.failures").description("Slack API 발송 실패 (재시도 없음)").register(registry);
+        this.slackRateLimited = Counter.builder("slack.ratelimited").description("Slack 호출 한도 초과(429/ratelimited) 응답").register(registry);
     }
 
     public void processed() { processed.increment(); }
@@ -35,7 +35,12 @@ public class NotificationMetrics {
 
     public void aiFallback() { aiFallback.increment(); }
 
-    public void slackSendFailure() { slackSendFailure.increment(); }
+    /** type: retryable(재시도 → 재시도 끝에 실패하면 DLT) / permanent(설정 오류 → 바로 DLT) */
+    public void slackSendFailure(String type) {
+        Counter.builder("slack.send.failures").description("Slack 발송 실패").tag("type", type).register(registry).increment();
+    }
+
+    public void slackRateLimited() { slackRateLimited.increment(); }
 
     /** 재시도 끝에 DLT 로 보낸 알림. reason 은 예외 클래스 이름(개인정보 아님) */
     public void sentToDlt(String topic, String reason) {

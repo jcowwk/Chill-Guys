@@ -113,7 +113,7 @@ class DltReplayIntegrationTest {
     void 실패해서_DLT_로_간_메시지를_원인_해결후_재처리하면_알림이_처리되고_다시_재투입되지_않는다() throws Exception {
         UUID orderId = UUID.randomUUID();
         String eventId = UUID.randomUUID().toString();
-        when(slackService.saveSlackMessage(orderIdIs(orderId))).thenThrow(new RuntimeException("hub-service 장애"));
+        doThrow(new RuntimeException("hub-service 장애")).when(slackService).processNotification(orderIdIs(orderId), any());
 
         send(eventId, json(orderId));
         // 조회는 몇 번을 해도 커밋하지 않으므로 같은 메시지가 보인다
@@ -132,7 +132,7 @@ class DltReplayIntegrationTest {
         JsonNode result = objectMapper.readTree(body);
         assertThat(result.get("replayed").asInt()).isGreaterThanOrEqualTo(1);
 
-        verify(slackService, timeout(20_000)).saveSlackMessage(orderIdIs(orderId));
+        verify(slackService, timeout(20_000)).processNotification(orderIdIs(orderId), any());
         await().atMost(Duration.ofSeconds(10)).until(() -> processedEventRepository.existsById(eventId));
 
         // 오프셋이 커밋되어 같은 메시지를 두 번 재투입하지 않는다
@@ -144,7 +144,7 @@ class DltReplayIntegrationTest {
     void 원인이_해결되지_않은채_반복_재처리하면_한도에서_멈춘다() {
         UUID orderId = UUID.randomUUID();
         String eventId = UUID.randomUUID().toString();
-        when(slackService.saveSlackMessage(orderIdIs(orderId))).thenThrow(new RuntimeException("여전히 장애"));
+        doThrow(new RuntimeException("여전히 장애")).when(slackService).processNotification(orderIdIs(orderId), any());
 
         send(eventId, json(orderId));
 
@@ -170,7 +170,7 @@ class DltReplayIntegrationTest {
             assertThat(i.reason()).contains("재처리 3회 초과");
         });
         // 최초 1회 + 재처리 3회, 각 회차마다 1 + 재시도 3 = 16번 시도
-        verify(slackService, timeout(5_000).times(16)).saveSlackMessage(orderIdIs(orderId));
+        verify(slackService, timeout(5_000).times(16)).processNotification(orderIdIs(orderId), any());
     }
 
     @Test

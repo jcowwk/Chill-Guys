@@ -38,7 +38,8 @@ GRAFANA_ADMIN_PASSWORD=<임의의 값> docker compose up -d
 | `slack_notification_retry_total` | 처리 실패 후 재시도 |
 | `slack_notification_dlt_total{topic,reason}` | 재시도 끝에 DLT 로 격리된 알림 |
 | `slack_ai_fallback_total` | AI 실패로 대체 문구 발송 |
-| `slack_send_failures_total` | Slack API 발송 실패 (재시도 없음) |
+| `slack_send_failures_total{type}` | Slack 발송 실패 (retryable: 재시도 / permanent: 설정 오류로 바로 DLT) |
+| `slack_ratelimited_total` | Slack 호출 한도 초과(429) 응답 |
 | `resilience4j_circuitbreaker_state{name}` | 서킷 브레이커 상태 (ai, slack) |
 | `spring_kafka_listener_seconds` | 알림 1건 처리 시간 |
 
@@ -53,7 +54,8 @@ GRAFANA_ADMIN_PASSWORD=<임의의 값> docker compose up -d
 | NotificationConsumerLag | 컨슈머 지연 1,000건 넘게 1분 | 외부 API 지연 또는 처리량 부족 |
 | NotificationSentToDlt | 최근 5분 DLT 격리 1건 이상 | 원인 해결 후 `POST /api/master/slack/dlt/replay` |
 | AiCircuitOpen | AI 서킷 열림 | Gemini 상태 확인. 알림은 대체 문구로 발송 중 |
-| SlackSendFailures | 최근 5분 Slack 발송 실패 1건 이상 | Slack 토큰, 호출 한도 확인. 알림 미전달 가능성 |
+| SlackPermanentFailure | 최근 5분 Slack 발송 거부(설정 오류) 1건 이상 | 채널, 토큰, 권한 확인 후 DLT 재처리 |
+| SlackRateLimited | 최근 5분 429 응답 20회 초과 1분 | 알림 지연 중. 인스턴스 수와 채널별 발송량 확인 |
 
 알람은 Prometheus 화면에서 확인한다. 메신저나 메일로 받으려면 Alertmanager 를 추가로 연결한다.
 

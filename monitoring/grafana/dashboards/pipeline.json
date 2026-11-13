@@ -640,8 +640,17 @@
         },
         {
           "refId": "E",
-          "expr": "sum(rate(slack_send_failures_total[1m]))",
-          "legendFormat": "Slack 발송 실패",
+          "expr": "sum(rate(slack_send_failures_total[1m])) by (type)",
+          "legendFormat": "Slack 발송 실패 {{type}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "F",
+          "expr": "sum(rate(slack_ratelimited_total[1m]))",
+          "legendFormat": "Slack 429",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
