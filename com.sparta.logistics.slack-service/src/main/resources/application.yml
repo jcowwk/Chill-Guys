@@ -10,7 +10,12 @@ spring:
     hikari:
       maximum-pool-size: 10
 
+  # 시작할 때 schema.sql 실행 (CREATE TABLE IF NOT EXISTS). DDL_AUTO 가 none 이어도 새 테이블이 생긴다.
+  sql:
+    init:
+      mode: always
   jpa:
+    defer-datasource-initialization: true   # Hibernate DDL 이 먼저, 그다음 schema.sql
     hibernate:
       ddl-auto: ${DDL_AUTO}
     show-sql: true
