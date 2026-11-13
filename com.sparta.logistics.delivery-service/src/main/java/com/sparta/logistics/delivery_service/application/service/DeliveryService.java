@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import com.sparta.logistics.delivery_service.infrastructure.monitoring.DeliveryPipelineMetrics;
 import java.util.concurrent.ExecutorService;
 
 @Slf4j
@@ -35,6 +36,7 @@ public class DeliveryService {
 
     private final DeliveryAssignmentProcessor deliveryAssignmentProcessor;
     private final ExecutorService deliveryAssignmentExecutor;
+    private final DeliveryPipelineMetrics pipelineMetrics;
 
     @Value("${delivery.assignment.batch-size:200}")
     private int assignmentBatchSize;
@@ -100,8 +102,11 @@ public class DeliveryService {
      * 이 메서드 자체에는 트랜잭션을 걸지 않는다.
      */
     public PendingAssignmentLoop.Result assignPendingDeliveries() {
-        return PendingAssignmentLoop.run("DeliveryAssign", assignmentBatchSize, assignmentMaxRunMs, deliveryAssignmentExecutor,
+        PendingAssignmentLoop.Result result = PendingAssignmentLoop.run("DeliveryAssign", assignmentBatchSize, assignmentMaxRunMs,
+                deliveryAssignmentExecutor,
                 deliveryRepository::findPendingRefsAfter, deliveryAssignmentProcessor::assignDelivery);
+        pipelineMetrics.assignmentResult(result.assigned(), result.failed());
+        return result;
     }
 
     @Transactional

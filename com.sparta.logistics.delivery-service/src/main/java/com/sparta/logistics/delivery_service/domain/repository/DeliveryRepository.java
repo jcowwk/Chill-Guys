@@ -21,6 +21,8 @@ public interface DeliveryRepository extends JpaRepository<Delivery, UUID> {
 
     List<Delivery> findByDeliveryStatusAndDeletedAtIsNull(DeliveryStatus deliveryStatus);
 
+    long countByDeliveryStatusAndDeletedAtIsNull(DeliveryStatus deliveryStatus);
+
     /** 배정 대기 건 ID 를 (생성 시각, ID) 커서 이후로 limit 건 조회 */
     @Query(value = """
             SELECT id AS "id", COALESCE(created_at, TIMESTAMP 'epoch') AS "createdAt" FROM p_delivery

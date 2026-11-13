@@ -28,6 +28,9 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
 
     long countByStatus(OutboxStatus status);
 
+    @Query("SELECT MIN(e.createdAt) FROM OutboxEvent e WHERE e.status = :status")
+    LocalDateTime findOldestCreatedAt(@Param("status") OutboxStatus status);
+
     @Modifying
     @Query("DELETE FROM OutboxEvent e WHERE e.status = :status AND e.publishedAt < :before")
     int deleteByStatusAndPublishedAtBefore(@Param("status") OutboxStatus status, @Param("before") LocalDateTime before);

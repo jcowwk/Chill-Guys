@@ -18,10 +18,26 @@ spring:
   task:
     scheduling:
       pool:
-        size: 3   # 배송 배정 스케줄러와 Outbox 릴레이가 서로를 막지 않도록 분리
+        size: 4   # 배정 스케줄러, Outbox 릴레이, 지표 갱신이 서로를 막지 않도록 분리
 
 server:
   port: 19094
+
+# 지표는 서비스 포트와 다른 관리 포트로만 공개한다.
+# 관리 포트는 Eureka 에 등록되지 않으므로 Gateway 를 통해 외부로 노출되지 않는다.
+management:
+  server:
+    port: ${MANAGEMENT_PORT:29094}
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+  metrics:
+    tags:
+      application: ${spring.application.name}
 
 eureka:
   client:

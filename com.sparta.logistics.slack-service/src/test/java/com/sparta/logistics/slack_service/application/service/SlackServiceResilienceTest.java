@@ -129,7 +129,8 @@ class SlackServiceResilienceTest {
     }
 
     private SlackService slackService(Resilience4JCircuitBreakerFactory factory) {
-        SlackService slackService = new SlackService(slackRepository, aiClient, slackClient, hubClient, orderClient, productClient, factory);
+        SlackService slackService = new SlackService(slackRepository, aiClient, slackClient, hubClient, orderClient, productClient, factory,
+                new com.sparta.logistics.slack_service.infrastructure.monitoring.NotificationMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
         ReflectionTestUtils.setField(slackService, "SLACK_BOT_TOKEN", "test-token");
         return slackService;
     }

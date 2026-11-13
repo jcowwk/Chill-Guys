@@ -25,7 +25,8 @@ class ConsumerEndpointTest {
     void setUp() {
         slackService = mock(SlackService.class);
         processedEventRepository = mock(ProcessedEventRepository.class);
-        endpoint = new ConsumerEndpoint(slackService, processedEventRepository);
+        endpoint = new ConsumerEndpoint(slackService, processedEventRepository,
+                new com.sparta.logistics.slack_service.infrastructure.monitoring.NotificationMetrics(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
     }
 
     private ConsumerRecord<String, DeliveryInfoDto> record(String eventId) {

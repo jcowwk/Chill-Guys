@@ -2,6 +2,8 @@ package com.sparta.logistics.slack_service.infrastructure.config;
 
 import com.sparta.logistics.slack_service.infrastructure.config.kafka.KafkaTopics;
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
+import com.sparta.logistics.slack_service.infrastructure.monitoring.NotificationMetrics;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -11,6 +13,7 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,6 +21,7 @@ import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.*;
+import org.springframework.kafka.core.MicrometerConsumerListener;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -38,6 +42,12 @@ public class ConsumerApplicationKafkaConfig {
 
     @Value("${spring.kafka.bootstrap-servers}")
     private String bootstrapServers;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
+
+    @Autowired
+    private NotificationMetrics notificationMetrics;
 
     /** 리스너당 컨슈머 스레드 수. 토픽 파티션 수 이하로 (초과분은 놀게 됨) */
     @Value("${kafka.consumer.concurrency:3}")
@@ -79,7 +89,10 @@ public class ConsumerApplicationKafkaConfig {
         // 알림 1건이 외부 API 5회 호출(+재시도)이라 느려질 수 있으므로 기본값 500 대신 작게 가져온다.
         configProps.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, maxPollRecords);
 
-        return new DefaultKafkaConsumerFactory<>(configProps);
+        DefaultKafkaConsumerFactory<String, DeliveryInfoDto> factory = new DefaultKafkaConsumerFactory<>(configProps);
+        // 컨슈머 지연(records-lag) 등 Kafka 클라이언트 지표를 Prometheus 로 노출
+        factory.addListener(new MicrometerConsumerListener<>(meterRegistry));
+        return factory;
     }
 
     @Bean
@@ -107,6 +120,7 @@ public class ConsumerApplicationKafkaConfig {
                 (record, ex) -> {
                     log.error("[Kafka] 재시도 초과 → DLT 이동 topic={}, partition={}, offset={}, key={}, error={}",
                             record.topic(), record.partition(), record.offset(), record.key(), ex.toString());
+                    notificationMetrics.sentToDlt(record.topic(), rootCauseName(ex));
                     return new TopicPartition(record.topic() + KafkaTopics.DLT_SUFFIX, -1);
                 });
 
@@ -116,9 +130,11 @@ public class ConsumerApplicationKafkaConfig {
         backOff.setMaxInterval(maxIntervalMs);
 
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, backOff);
-        errorHandler.setRetryListeners((record, ex, deliveryAttempt) ->
+        errorHandler.setRetryListeners((record, ex, deliveryAttempt) -> {
+                notificationMetrics.retry();
                 log.warn("[Kafka] 메시지 처리 실패, 재시도 {}회차 topic={}, offset={}, error={}",
-                        deliveryAttempt, record.topic(), record.offset(), ex.toString()));
+                        deliveryAttempt, record.topic(), record.offset(), ex.toString());
+        });
         return errorHandler;
     }
 
@@ -144,6 +160,12 @@ public class ConsumerApplicationKafkaConfig {
     @Bean
     public NewTopic companyDeadLetterTopic() {
         return TopicBuilder.name(KafkaTopics.COMPANY + KafkaTopics.DLT_SUFFIX).partitions(1).replicas(1).build();
+    }
+
+    private static String rootCauseName(Throwable ex) {
+        Throwable t = ex;
+        while (t.getCause() != null && t.getCause() != t) t = t.getCause();
+        return t.getClass().getSimpleName();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

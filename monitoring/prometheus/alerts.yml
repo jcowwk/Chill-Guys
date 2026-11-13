@@ -1,0 +1,60 @@
+groups:
+  - name: delivery-notification-pipeline
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"delivery-service|slack-service"} == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} 지표 수집 실패 (서비스 다운 의심)"
+
+      - alert: OutboxPublishStuck
+        # 릴레이는 3초마다 돈다. 가장 오래된 미발행 이벤트가 1분 넘게 남아 있으면 Kafka 발행이 막힌 것
+        expr: max(delivery_outbox_oldest_pending_age_seconds) > 60
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "Kafka 발행 지연: 가장 오래된 미발행 이벤트 {{ $value | humanizeDuration }}"
+          description: "Kafka 브로커 상태 확인. 이벤트는 Outbox 에 보존되며 복구 시 자동 발행된다."
+
+      - alert: OutboxPermanentFailure
+        expr: max(delivery_outbox_failed) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "영구 실패로 격리된 Outbox 이벤트 {{ $value }}건 (수동 확인 필요)"
+
+      - alert: AssignmentBacklog
+        expr: max(delivery_assignment_pending) > 3000
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "담당자 배정 대기 {{ $value }}건 - delivery-manager-service 상태 또는 유입량 확인"
+
+      - alert: NotificationConsumerLag
+        # records_lag = 파티션별 현재 밀린 양. 메시지를 받은 적 없는 컨슈머는 NaN 을 보고하므로 >= 0 으로 거른다
+        # (records_lag_max 는 구간 최댓값이고 NaN 이 섞이면 합계 전체가 NaN 이 되어 알람이 울리지 않는다 - 실측)
+        expr: sum(kafka_consumer_fetch_manager_records_lag{job="slack-service"} >= 0) > 1000
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "알림 컨슈머 지연 {{ $value }}건 - 외부 API(hub/order/product/AI) 지연 또는 처리량 부족"
+
+      - alert: NotificationSentToDlt
+        expr: sum(increase(slack_notification_dlt_total[5m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "최근 5분간 DLT 로 격리된 알림 {{ $value | humanize }}건 - 원인 해결 후 재처리 API 실행"
+
+      - alert: AiCircuitOpen
+        expr: max(resilience4j_circuitbreaker_state{name="ai",state="open"}) == 1
+        for: 10s
+        labels: { severity: warning }
+        annotations:
+          summary: "AI(Gemini) 서킷 열림 - 알림이 대체 문구로 발송 중"
+
+      - alert: SlackSendFailures
+        # Slack 발송 실패는 재시도 없이 넘어가므로 알림이 실제로 전달되지 않았을 수 있다
+        expr: sum(increase(slack_send_failures_total[5m])) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "최근 5분간 Slack 발송 실패 {{ $value | humanize }}건 - 알림 미전달 가능성"

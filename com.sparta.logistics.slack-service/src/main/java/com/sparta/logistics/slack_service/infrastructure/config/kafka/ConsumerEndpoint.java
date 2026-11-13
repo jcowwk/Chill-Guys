@@ -4,6 +4,7 @@ import com.sparta.logistics.slack_service.application.service.SlackService;
 import com.sparta.logistics.slack_service.domain.entity.ProcessedEvent;
 import com.sparta.logistics.slack_service.domain.repository.ProcessedEventRepository;
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
+import com.sparta.logistics.slack_service.infrastructure.monitoring.NotificationMetrics;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -20,6 +21,7 @@ import java.time.LocalDateTime;
 public class ConsumerEndpoint {
     private final SlackService slackService;
     private final ProcessedEventRepository processedEventRepository;
+    private final NotificationMetrics metrics;
 
     @KafkaListener(groupId = "hub", topics = KafkaTopics.HUB)
     public void hubListen(ConsumerRecord<String, DeliveryInfoDto> record) {
@@ -42,10 +44,12 @@ public class ConsumerEndpoint {
 
         if (eventId != null && processedEventRepository.existsById(eventId)) {
             log.info("이미 처리된 이벤트 skip eventId={}, topic={}", eventId, record.topic());
+            metrics.duplicate();
             return;
         }
 
         slackService.saveSlackMessage(record.value());
+        metrics.processed();
 
         if (eventId != null) {
             markProcessed(eventId, record.topic());

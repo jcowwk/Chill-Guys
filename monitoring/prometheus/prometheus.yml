@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  # 서비스가 호스트에서 실행된다고 가정 (컨테이너로 띄우면 targets 를 서비스 이름으로 바꾼다)
+  - job_name: delivery-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:29094"]
+  - job_name: slack-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:29099"]

@@ -3,6 +3,7 @@ package com.sparta.logistics.delivery_service.infrastructure.messaging.outbox;
 import com.sparta.logistics.delivery_service.domain.model.OutboxEvent;
 import com.sparta.logistics.delivery_service.domain.model.OutboxStatus;
 import com.sparta.logistics.delivery_service.domain.repository.OutboxEventRepository;
+import com.sparta.logistics.delivery_service.infrastructure.monitoring.DeliveryPipelineMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.RetriableException;
@@ -34,6 +35,7 @@ public class OutboxPublisher {
 
     private final OutboxEventRepository outboxEventRepository;
     private final KafkaTemplate<String, String> outboxKafkaTemplate;
+    private final DeliveryPipelineMetrics metrics;
 
     private final int batchSize;
     private final long sendTimeoutMs;
@@ -43,6 +45,7 @@ public class OutboxPublisher {
 
     public OutboxPublisher(OutboxEventRepository outboxEventRepository,
                            KafkaTemplate<String, String> outboxKafkaTemplate,
+                           DeliveryPipelineMetrics metrics,
                            @Value("${outbox.relay.batch-size:500}") int batchSize,
                            @Value("${outbox.relay.send-timeout-ms:20000}") long sendTimeoutMs,
                            @Value("${outbox.relay.max-retries:10}") int maxRetries,
@@ -50,6 +53,7 @@ public class OutboxPublisher {
                            @Value("${outbox.relay.max-backoff-ms:300000}") long maxBackoffMs) {
         this.outboxEventRepository = outboxEventRepository;
         this.outboxKafkaTemplate = outboxKafkaTemplate;
+        this.metrics = metrics;
         this.batchSize = batchSize;
         this.sendTimeoutMs = sendTimeoutMs;
         this.maxRetries = maxRetries;
@@ -99,6 +103,7 @@ public class OutboxPublisher {
                 failed = true;
             }
         }
+        metrics.published(published);
         return new PublishResult(events.size(), published, failed, batchSize);
     }
 
@@ -118,6 +123,7 @@ public class OutboxPublisher {
         Throwable cause = rootCause(e);
         boolean retriable = isRetriable(e);
         event.recordFailure(cause.toString(), retriable, maxRetries, baseBackoff, maxBackoff, LocalDateTime.now());
+        metrics.publishFailed(retriable);
 
         if (event.getStatus() == OutboxStatus.FAILED) {
             log.error("[Outbox] 이벤트 발행 영구 실패 - 수동 확인 필요 eventId={}, topic={}, aggregateId={}, error={}",

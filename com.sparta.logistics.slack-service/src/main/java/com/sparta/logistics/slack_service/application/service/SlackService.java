@@ -11,6 +11,7 @@ import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
 import com.sparta.logistics.slack_service.infrastructure.dto.HubResponseDto;
 import com.sparta.logistics.slack_service.domain.repository.SlackRepository;
 import com.sparta.logistics.slack_service.infrastructure.dto.OrderSlackDto;
+import com.sparta.logistics.slack_service.infrastructure.monitoring.NotificationMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.client.circuitbreaker.CircuitBreakerFactory;
@@ -36,8 +37,9 @@ public class SlackService {
     private final OrderClient orderClient;
     private final ProductClient productClient;
     private final CircuitBreakerFactory<?, ?> circuitBreakerFactory;
+    private final NotificationMetrics metrics;
 
-    public SlackService(SlackRepository slackRepository, AiClient aiClient, SlackClient slackClient, HubClient hubClient, OrderClient orderClient, ProductClient productClient, CircuitBreakerFactory<?, ?> circuitBreakerFactory) {
+    public SlackService(SlackRepository slackRepository, AiClient aiClient, SlackClient slackClient, HubClient hubClient, OrderClient orderClient, ProductClient productClient, CircuitBreakerFactory<?, ?> circuitBreakerFactory, NotificationMetrics metrics) {
         this.slackRepository = slackRepository;
         this.aiClient = aiClient;
         this.slackClient = slackClient;
@@ -45,6 +47,7 @@ public class SlackService {
         this.orderClient = orderClient;
         this.productClient = productClient;
         this.circuitBreakerFactory = circuitBreakerFactory;
+        this.metrics = metrics;
     }
 
     public SlackMessageSaveResponseDto saveSlackMessage(DeliveryInfoDto deliveryResponseDto) {
@@ -62,6 +65,7 @@ public class SlackService {
                 () -> aiClient.generateCompletion(inputForAI),
                 throwable -> {
                     log.warn("AI 배송일 예측 실패, 대체 문구로 발송: {}", throwable.toString());
+                    metrics.aiFallback();
                     return AI_FALLBACK_TEXT;
                 });
 
@@ -164,6 +168,7 @@ public class SlackService {
             }
         } catch (Exception e) {
             log.error("Slack 메시지 발송 실패 id={}: {}", id, e.toString());
+            metrics.slackSendFailure();
             responseText = "Slack API 호출 중 예외 발생";
         }
 

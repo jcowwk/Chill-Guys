@@ -3,6 +3,7 @@ package com.sparta.logistics.delivery_service.infrastructure.messaging.outbox;
 import com.sparta.logistics.delivery_service.domain.model.OutboxEvent;
 import com.sparta.logistics.delivery_service.domain.model.OutboxStatus;
 import com.sparta.logistics.delivery_service.domain.repository.OutboxEventRepository;
+import com.sparta.logistics.delivery_service.infrastructure.monitoring.DeliveryPipelineMetrics;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,12 +30,14 @@ class OutboxPublisherTest {
     private OutboxEventRepository repository;
     private KafkaTemplate<String, String> kafkaTemplate;
     private OutboxPublisher publisher;
+    private final DeliveryPipelineMetrics metrics = new DeliveryPipelineMetrics(
+            new io.micrometer.core.instrument.simple.SimpleMeterRegistry(), null, null);
 
     @BeforeEach
     void setUp() {
         repository = mock(OutboxEventRepository.class);
         kafkaTemplate = mock(KafkaTemplate.class);
-        publisher = new OutboxPublisher(repository, kafkaTemplate, 100, 1000, 1, 5000, 300000);
+        publisher = new OutboxPublisher(repository, kafkaTemplate, metrics, 100, 1000, 1, 5000, 300000);
     }
 
     private OutboxEvent newEvent() {
@@ -102,7 +105,7 @@ class OutboxPublisherTest {
 
     @Test
     void 배치가_가득차면_hasMore_로_연속_발행을_알린다() {
-        publisher = new OutboxPublisher(repository, kafkaTemplate, 2, 1000, 1, 5000, 300000);
+        publisher = new OutboxPublisher(repository, kafkaTemplate, metrics, 2, 1000, 1, 5000, 300000);
         when(repository.findPublishableForUpdate(any(), anyInt())).thenReturn(List.of(newEvent(), newEvent()));
         when(kafkaTemplate.send(any(ProducerRecord.class)))
                 .thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));

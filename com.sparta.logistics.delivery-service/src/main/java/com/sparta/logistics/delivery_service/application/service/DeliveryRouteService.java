@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import com.sparta.logistics.delivery_service.infrastructure.monitoring.DeliveryPipelineMetrics;
 import java.util.concurrent.ExecutorService;
 
 
@@ -32,6 +33,7 @@ public class DeliveryRouteService {
     private final HubRouteClient hubRouteClient;
     private final DeliveryAssignmentProcessor deliveryAssignmentProcessor;
     private final ExecutorService deliveryAssignmentExecutor;
+    private final DeliveryPipelineMetrics pipelineMetrics;
 
     @Value("${delivery.assignment.batch-size:200}")
     private int assignmentBatchSize;
@@ -115,8 +117,11 @@ public class DeliveryRouteService {
 
     /** 배정 대기 배송경로를 건별 트랜잭션으로 처리한다 (트랜잭션 경계는 DeliveryAssignmentProcessor). */
     public PendingAssignmentLoop.Result assignPendingDeliveries() {
-        return PendingAssignmentLoop.run("RouteAssign", assignmentBatchSize, assignmentMaxRunMs, deliveryAssignmentExecutor,
+        PendingAssignmentLoop.Result result = PendingAssignmentLoop.run("RouteAssign", assignmentBatchSize, assignmentMaxRunMs,
+                deliveryAssignmentExecutor,
                 deliveryRouteRepository::findPendingRefsAfter, deliveryAssignmentProcessor::assignRoute);
+        pipelineMetrics.assignmentResult(result.assigned(), result.failed());
+        return result;
     }
 
     @Transactional

@@ -34,17 +34,6 @@ spring:
             connectTimeout: 2000
             readTimeout: 3000
 
-  management:
-    endpoints:
-      web:
-        exposure:
-          include: "*"
-    health:
-      diskspace:
-        enabled: true
-      db:
-        enabled: true
-
   kafka:
     # 컨슈머/DLT 프로듀서/토픽 생성(KafkaAdmin) 공통 주소
     bootstrap-servers: ${KAFKA_SERVER_URL:localhost:9092}
@@ -53,6 +42,26 @@ spring:
 
 server:
   port: 19099
+
+# 지표는 서비스 포트와 다른 관리 포트로만 공개한다.
+# 관리 포트는 Eureka 에 등록되지 않으므로 Gateway 를 통해 외부로 노출되지 않는다.
+# (기존 설정은 spring: 아래에 잘못 들어가 적용되지 않았고, 모든 엔드포인트("*") 공개였음)
+management:
+  server:
+    port: ${MANAGEMENT_PORT:29099}
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      show-details: never
+  metrics:
+    tags:
+      application: ${spring.application.name}
+    distribution:
+      percentiles-histogram:
+        spring.kafka.listener: true   # 알림 1건 처리 시간 p95 를 보기 위해
 
 eureka:
   client:
