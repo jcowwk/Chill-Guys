@@ -119,8 +119,8 @@ public class ConsumerApplicationKafkaConfig {
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(deadLetterKafkaTemplate,
                 // partition -1: DLT 파티션 수가 원본과 달라도 발행 가능하도록 파티션 지정을 Kafka 에 맡김
                 (record, ex) -> {
-                    log.error("[Kafka] 재시도 초과 → DLT 이동 topic={}, partition={}, offset={}, key={}, error={}",
-                            record.topic(), record.partition(), record.offset(), record.key(), ex.toString());
+                    log.error("[Kafka] 재시도 초과 → DLT 이동 topic={}, partition={}, offset={}, key={}, cause={}",
+                            record.topic(), record.partition(), record.offset(), record.key(), rootCause(ex));
                     notificationMetrics.sentToDlt(record.topic(), rootCauseName(ex));
                     return new TopicPartition(record.topic() + KafkaTopics.DLT_SUFFIX, -1);
                 });
@@ -135,8 +135,8 @@ public class ConsumerApplicationKafkaConfig {
         errorHandler.addNotRetryableExceptions(SlackPermanentException.class);
         errorHandler.setRetryListeners((record, ex, deliveryAttempt) -> {
                 notificationMetrics.retry();
-                log.warn("[Kafka] 메시지 처리 실패, 재시도 {}회차 topic={}, offset={}, error={}",
-                        deliveryAttempt, record.topic(), record.offset(), ex.toString());
+                log.warn("[Kafka] 메시지 처리 실패, 재시도 {}회차 topic={}, offset={}, cause={}",
+                        deliveryAttempt, record.topic(), record.offset(), rootCause(ex));
         });
         return errorHandler;
     }
@@ -165,10 +165,18 @@ public class ConsumerApplicationKafkaConfig {
         return TopicBuilder.name(KafkaTopics.COMPANY + KafkaTopics.DLT_SUFFIX).partitions(1).replicas(1).build();
     }
 
+    /** 지표 태그용: 원인 예외 클래스 이름 (개인정보 없음) */
     private static String rootCauseName(Throwable ex) {
         Throwable t = ex;
         while (t.getCause() != null && t.getCause() != t) t = t.getCause();
         return t.getClass().getSimpleName();
+    }
+
+    /** 로그에는 감싸진 리스너 예외 대신 실제 원인을 남긴다 */
+    private static String rootCause(Throwable ex) {
+        Throwable t = ex;
+        while (t.getCause() != null && t.getCause() != t) t = t.getCause();
+        return t.getClass().getSimpleName() + ": " + t.getMessage();
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

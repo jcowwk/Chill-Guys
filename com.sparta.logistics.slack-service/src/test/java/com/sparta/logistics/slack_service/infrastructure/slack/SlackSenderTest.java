@@ -18,11 +18,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -31,12 +35,13 @@ class SlackSenderTest {
     private SlackClient slackClient;
     private SlackRateLimiter limiter;
     private SlackSender sender;
+    private Resilience4JCircuitBreakerFactory factory;
 
     @BeforeEach
     void setUp() {
         slackClient = mock(SlackClient.class);
         limiter = new SlackRateLimiter(0, 500);
-        Resilience4JCircuitBreakerFactory factory = new Resilience4JCircuitBreakerFactory(
+        factory = new Resilience4JCircuitBreakerFactory(
                 CircuitBreakerRegistry.ofDefaults(), TimeLimiterRegistry.ofDefaults(), null, new Resilience4JConfigurationProperties());
         new ResilienceConfig().externalApiCircuitBreakerCustomizer().customize(factory);
         sender = new SlackSender(slackClient, factory, limiter, "test-token");
@@ -53,12 +58,43 @@ class SlackSenderTest {
     }
 
     @Test
-    void 호출_한도_429_면_Retry_After_동안_채널을_쉬고_재시도_예외() {
-        when(slackClient.sendSlackMessage(anyString(), any())).thenThrow(httpError(429, Map.of("Retry-After", List.of("3"))));
+    void 호출_한도_429_면_Retry_After_만큼_기다렸다가_같은_메시지를_다시_보낸다() {
+        sender = new SlackSender(slackClient, factory, new SlackRateLimiter(0, 5_000), "test-token");
+        when(slackClient.sendSlackMessage(anyString(), any()))
+                .thenThrow(httpError(429, Map.of("Retry-After", List.of("1"))))
+                .thenReturn("{\"ok\":true}");
 
-        assertThatThrownBy(this::send).isInstanceOf(SlackRetryableException.class).hasMessageContaining("3초");
-        // 3초 쉬어야 하므로 최대 대기(0.5초)를 넘어 바로 재시도로 넘어감
-        assertThatThrownBy(() -> limiter.acquire("C1")).isInstanceOf(SlackRetryableException.class);
+        long start = System.nanoTime();
+        assertThatCode(this::send).doesNotThrowAnyException();
+        long elapsedMs = java.time.Duration.ofNanos(System.nanoTime() - start).toMillis();
+
+        assertThat(elapsedMs).isGreaterThanOrEqualTo(900); // Retry-After 1초 준수
+        verify(slackClient, times(2)).sendSlackMessage(anyString(), any());
+    }
+
+    @Test
+    void 호출_한도_429_가_최대_대기_시간을_넘게_계속되면_재시도_예외로_넘긴다() {
+        sender = new SlackSender(slackClient, factory, new SlackRateLimiter(0, 5_000), "test-token",
+                java.time.Duration.ofMillis(1_500));
+        when(slackClient.sendSlackMessage(anyString(), any()))
+                .thenThrow(httpError(429, Map.of("Retry-After", List.of("1"))));
+
+        assertThatThrownBy(this::send).isInstanceOf(SlackRateLimitedException.class);
+    }
+
+    @Test
+    void 호출_한도_429_는_서킷_브레이커_실패로_세지_않는다() {
+        sender = new SlackSender(slackClient, factory, new SlackRateLimiter(0, 5_000), "test-token",
+                java.time.Duration.ZERO);
+        when(slackClient.sendSlackMessage(anyString(), any()))
+                .thenThrow(httpError(429, Map.of("Retry-After", List.of("1"))));
+        for (int i = 0; i < 20; i++) {
+            assertThatThrownBy(this::send).isInstanceOf(SlackRateLimitedException.class);
+        }
+
+        // 429 가 20번 왔어도 서킷은 닫혀 있어 바로 정상 발송된다 (열렸다면 CallNotPermitted)
+        doReturn("{\"ok\":true}").when(slackClient).sendSlackMessage(anyString(), any());
+        assertThatCode(this::send).doesNotThrowAnyException();
     }
 
     @Test
