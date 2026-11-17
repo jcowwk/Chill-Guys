@@ -55,6 +55,8 @@ kafka:
 
 # 배송 담당자 배정 스케줄러 (건별 트랜잭션)
 delivery:
+  cancellation:
+    retention-days: 30    # 주문 단위 배송 취소 표시 보관 기간 (늦게 온 배송 생성 거절용)
   assignment:
     batch-size: 200       # 한 번에 조회하는 대기 건 수 (ID 만 조회)
     max-run-ms: 50000     # 한 번 실행의 최대 시간 (스케줄 주기 60초보다 짧게)

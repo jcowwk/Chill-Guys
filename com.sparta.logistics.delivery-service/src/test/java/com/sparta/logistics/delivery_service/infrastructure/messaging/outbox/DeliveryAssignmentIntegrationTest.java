@@ -1,6 +1,7 @@
 package com.sparta.logistics.delivery_service.infrastructure.messaging.outbox;
 
 import com.sparta.logistics.delivery_service.application.dto.response.DeliveryManagerInfoDto;
+import com.sparta.logistics.delivery_service.application.service.DeliveryCancellationCleaner;
 import com.sparta.logistics.delivery_service.application.service.DeliveryAssignmentProcessor;
 import com.sparta.logistics.delivery_service.application.service.DeliveryService;
 import com.sparta.logistics.delivery_service.application.service.PendingAssignmentLoop;
@@ -56,6 +57,7 @@ class DeliveryAssignmentIntegrationTest extends OutboxIntegrationTestSupport {
     @Autowired OutboxEventRepository outboxEventRepository;
     @Autowired TransactionTemplate tx;
     @Autowired DeliveryCancellationRepository cancellationRepository;
+    @Autowired DeliveryCancellationCleaner cancellationCleaner;
 
     @AfterEach
     void cleanUp() {
@@ -200,6 +202,19 @@ class DeliveryAssignmentIntegrationTest extends OutboxIntegrationTestSupport {
                 .isInstanceOf(CustomException.class);
         assertThat(deliveryRepository.findByOrderIdAndDeletedAtIsNull(orderId)).isEmpty();
         assertThat(cancellationRepository.existsById(orderId)).isTrue();
+    }
+
+    @Test
+    void 배송_취소_표시는_보관기간이_지나면_정리된다() {
+        UUID orderId = UUID.randomUUID();
+        deliveryService.cancelByOrderId(orderId);
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+
+        assertThat(cancellationCleaner.purge(now.plusDays(29))).isZero();
+        assertThat(cancellationRepository.existsById(orderId)).isTrue();
+
+        assertThat(cancellationCleaner.purge(now.plusDays(31))).isEqualTo(1);
+        assertThat(cancellationRepository.existsById(orderId)).isFalse();
     }
 
     @Test

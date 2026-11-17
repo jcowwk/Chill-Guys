@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @DataJpaTest
 @Testcontainers
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({ProductService.class, StockService.class})
+@Import({ProductService.class, StockService.class, StockHistoryCleaner.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class StockIdempotencyTest {
 
@@ -48,6 +48,7 @@ class StockIdempotencyTest {
     @Autowired ProductService productService;
     @Autowired ProductRepository productRepository;
     @Autowired StockHistoryRepository historyRepository;
+    @Autowired StockHistoryCleaner historyCleaner;
     @MockitoBean CompanyClient companyClient;
     @MockitoBean HubClient hubClient;
 
@@ -170,6 +171,21 @@ class StockIdempotencyTest {
         assertThatThrownBy(() -> stockService.restore(productId, -1L, null))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThat(stock(productId)).isEqualTo(10L);
+    }
+
+    @Test
+    @DisplayName("재고 변동 기록은 보관 기간(30일)이 지나면 정리된다")
+    void history_purgedAfterRetention() {
+        UUID productId = saveProduct(10L);
+        stockService.decrease(productId, 3L, UUID.randomUUID());
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+
+        assertThat(historyCleaner.purge(now.plusDays(29))).isZero();
+        assertThat(historyRepository.count()).isEqualTo(1);
+
+        assertThat(historyCleaner.purge(now.plusDays(31))).isEqualTo(1);
+        assertThat(historyRepository.count()).isZero();
+        assertThat(stock(productId)).isEqualTo(7L);   // 기록만 지우고 재고는 그대로
     }
 
     private long stock(UUID productId) {
