@@ -5,7 +5,11 @@ import com.sparta.logistics.delivery_service.application.service.DeliveryAssignm
 import com.sparta.logistics.delivery_service.application.service.DeliveryService;
 import com.sparta.logistics.delivery_service.application.service.PendingAssignmentLoop;
 import com.sparta.logistics.delivery_service.domain.model.*;
+import com.sparta.logistics.delivery_service.application.dto.request.OrderDeliveryRequestDto;
+import com.sparta.logistics.delivery_service.domain.repository.DeliveryCancellationRepository;
 import com.sparta.logistics.delivery_service.domain.repository.DeliveryRepository;
+import com.sparta.logistics.delivery_service.exception.CustomException;
+import org.springframework.test.util.ReflectionTestUtils;
 import com.sparta.logistics.delivery_service.domain.repository.OutboxEventRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -23,6 +27,7 @@ import java.util.UUID;
 import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -50,11 +55,13 @@ class DeliveryAssignmentIntegrationTest extends OutboxIntegrationTestSupport {
     @Autowired DeliveryRepository deliveryRepository;
     @Autowired OutboxEventRepository outboxEventRepository;
     @Autowired TransactionTemplate tx;
+    @Autowired DeliveryCancellationRepository cancellationRepository;
 
     @AfterEach
     void cleanUp() {
         outboxEventRepository.deleteAll();
         deliveryRepository.deleteAll();
+        cancellationRepository.deleteAll();
     }
 
     @Test
@@ -179,6 +186,63 @@ class DeliveryAssignmentIntegrationTest extends OutboxIntegrationTestSupport {
         assertThat(status(cancelled)).isEqualTo(DeliveryStatus.PENDING);
         assertThat(status(other)).isEqualTo(DeliveryStatus.SHIPPING);
         assertThat(outboxEventRepository.findAll()).extracting(OutboxEvent::getAggregateId).containsExactly(other.getId());
+    }
+
+    @Test
+    void 취소가_먼저_끝나면_늦게_도착한_배송_생성은_거절된다() {
+        UUID orderId = UUID.randomUUID();
+        when(productClient.getHubIdByProductId(any())).thenReturn(UUID.randomUUID());
+        when(companyClient.getHubIdByCompanyId(any())).thenReturn(UUID.randomUUID());
+
+        assertThat(deliveryService.cancelByOrderId(orderId)).isZero();   // 아직 배송 없음 → 취소 표시만
+
+        assertThatThrownBy(() -> deliveryService.createDelivery(request(orderId)))
+                .isInstanceOf(CustomException.class);
+        assertThat(deliveryRepository.findByOrderIdAndDeletedAtIsNull(orderId)).isEmpty();
+        assertThat(cancellationRepository.existsById(orderId)).isTrue();
+    }
+
+    @Test
+    void 생성_중인_배송이_있으면_취소는_그_커밋을_기다렸다가_취소한다() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            // 배송 생성 트랜잭션: 주문 잠금 + 저장 후 커밋 전에 멈춤
+            Future<?> creating = pool.submit(() -> tx.executeWithoutResult(s -> {
+                cancellationRepository.lockOrder(orderId);
+                deliveryRepository.save(Delivery.builder()
+                        .orderId(orderId).departureHubId(UUID.randomUUID()).destinationHubId(UUID.randomUUID())
+                        .productId(UUID.randomUUID())
+                        .recipientCompany(RecipientCompany.builder().companyId(UUID.randomUUID()).address("서울시").build())
+                        .build());
+                locked.countDown();
+                try { release.await(10, TimeUnit.SECONDS); } catch (InterruptedException e) { throw new RuntimeException(e); }
+            }));
+            assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+
+            Future<Integer> cancelling = pool.submit(() -> deliveryService.cancelByOrderId(orderId));
+            Thread.sleep(500);
+            assertThat(cancelling.isDone()).isFalse();        // 생성 커밋 전에는 기다린다
+
+            release.countDown();
+            creating.get(10, TimeUnit.SECONDS);
+            assertThat(cancelling.get(10, TimeUnit.SECONDS)).isEqualTo(1);   // 커밋된 배송을 보고 취소
+            assertThat(deliveryRepository.findByOrderIdAndDeletedAtIsNull(orderId)).isEmpty();
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
+    private OrderDeliveryRequestDto request(UUID orderId) {
+        OrderDeliveryRequestDto dto = new OrderDeliveryRequestDto();
+        ReflectionTestUtils.setField(dto, "orderId", orderId);
+        ReflectionTestUtils.setField(dto, "productId", UUID.randomUUID());
+        ReflectionTestUtils.setField(dto, "requestCompanyId", UUID.randomUUID());
+        ReflectionTestUtils.setField(dto, "address", "서울");
+        return dto;
     }
 
     private DeliveryStatus status(Delivery d) {

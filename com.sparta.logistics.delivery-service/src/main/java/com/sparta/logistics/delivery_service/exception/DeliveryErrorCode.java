@@ -10,6 +10,7 @@ public enum DeliveryErrorCode implements ErrorCode {
 
     DELIVERY_NOT_FOUND(HttpStatus.NOT_FOUND, "해당 배송을 찾을 수 없습니다."),
     DELIVERY_IN_START(HttpStatus.CONFLICT, "이미 배송이 시작되어 수정할 수 없습니다."),
+    ORDER_CANCELLED(HttpStatus.CONFLICT, "취소된 주문의 배송은 만들 수 없습니다."),
 
     DELIVERY_ROUTE_NOT_FOUND(HttpStatus.NOT_FOUND, "해당 배송 경로 기록을 찾을 수 없습니다.");
 

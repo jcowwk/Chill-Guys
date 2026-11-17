@@ -16,3 +16,9 @@ CREATE TABLE IF NOT EXISTS p_outbox_event (
     published_at  timestamp(6) without time zone
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status_next_retry ON p_outbox_event (status, next_retry_at);
+
+-- 주문 단위 배송 취소 표시: 취소가 배송 생성보다 먼저 끝난 경우 늦게 온 생성을 거절한다
+CREATE TABLE IF NOT EXISTS p_delivery_cancellation (
+    order_id     uuid                           NOT NULL PRIMARY KEY,
+    cancelled_at timestamp(6) without time zone NOT NULL
+);
