@@ -27,6 +27,9 @@ public class SlackService {
     /** 알림을 보내지 않는 주문 상태 */
     private static final java.util.Set<String> SKIPPED_ORDER_STATUSES = java.util.Set.of("FAILED", "CANCELLED");
 
+    /** 재고·배송 처리가 끝나지 않은 주문 상태 (성공할지 실패할지 아직 모름) */
+    private static final String PROCESSING = "PROCESSING";
+
     private final SlackRepository slackRepository;
     private final AiClient aiClient;
     private final HubClient hubClient;
@@ -72,6 +75,10 @@ public class SlackService {
         if (order != null && SKIPPED_ORDER_STATUSES.contains(order.getStatus())) {
             log.warn("실패·취소된 주문의 배송 알림 생략 orderId={}, status={}", delivery.getOrderId(), order.getStatus());
             return;
+        }
+        // 아직 처리 중이면 보내지 않고 다시 시도한다. 지금 보내면 직후에 주문이 실패해도 알림을 되돌릴 수 없다.
+        if (order != null && PROCESSING.equals(order.getStatus())) {
+            throw new OrderNotReadyException(delivery.getOrderId());
         }
         Slack slack = (eventId == null ? Optional.<Slack>empty() : slackRepository.findByEventId(eventId))
                 .orElseGet(() -> saveNew(delivery, eventId, order));
