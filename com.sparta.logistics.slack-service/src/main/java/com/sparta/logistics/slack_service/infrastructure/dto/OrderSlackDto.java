@@ -8,4 +8,6 @@ import lombok.*;
 public class OrderSlackDto {
     private Long quantity;
     private String request;
+    /** 주문 상태 (FAILED, CANCELLED 면 알림을 보내지 않는다) */
+    private String status;
 }

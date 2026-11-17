@@ -24,6 +24,9 @@ public class SlackService {
     // AI 장애 시에도 배송 알림은 나가도록 사용하는 대체 문구
     static final String AI_FALLBACK_TEXT = "AI 예측 불가 (담당자 확인 필요)";
 
+    /** 알림을 보내지 않는 주문 상태 */
+    private static final java.util.Set<String> SKIPPED_ORDER_STATUSES = java.util.Set.of("FAILED", "CANCELLED");
+
     private final SlackRepository slackRepository;
     private final AiClient aiClient;
     private final HubClient hubClient;
@@ -47,7 +50,7 @@ public class SlackService {
      * 발송 실패는 응답을 막지 않도록 로그로만 남긴다 (기존 동작 유지).
      */
     public SlackMessageSaveResponseDto saveSlackMessage(DeliveryInfoDto deliveryResponseDto) {
-        Slack slack = saveNew(deliveryResponseDto, null);
+        Slack slack = saveNew(deliveryResponseDto, null, orderClient.getOrderInfo(deliveryResponseDto.getOrderId()));
         sendSlackMessage(slack.getId(), slack.getSlackId());
         return SlackMessageSaveResponseDto.builder()
                 .id(slack.getId())
@@ -63,8 +66,15 @@ public class SlackService {
      * - 이미 발송된 알림이면 다시 보내지 않는다
      */
     public void processNotification(DeliveryInfoDto delivery, String eventId) {
+        // 주문 생성이 실패(보상 완료)했거나 취소된 주문이면 배송 알림을 보내지 않는다.
+        // 배송 생성 응답만 끊겨 배송이 남은 경우, 배송 취소보다 배정·알림 이벤트가 먼저 나간 경우를 여기서 막는다.
+        OrderSlackDto order = orderClient.getOrderInfo(delivery.getOrderId());
+        if (order != null && SKIPPED_ORDER_STATUSES.contains(order.getStatus())) {
+            log.warn("실패·취소된 주문의 배송 알림 생략 orderId={}, status={}", delivery.getOrderId(), order.getStatus());
+            return;
+        }
         Slack slack = (eventId == null ? Optional.<Slack>empty() : slackRepository.findByEventId(eventId))
-                .orElseGet(() -> saveNew(delivery, eventId));
+                .orElseGet(() -> saveNew(delivery, eventId, order));
         if (slack.getSentAt() != null) {
             return;
         }
@@ -73,11 +83,11 @@ public class SlackService {
         slackRepository.save(slack);
     }
 
-    private Slack saveNew(DeliveryInfoDto delivery, String eventId) {
+    private Slack saveNew(DeliveryInfoDto delivery, String eventId, OrderSlackDto order) {
         Slack slack = Slack.builder()
                 .id(UUID.randomUUID())
                 .slackId(delivery.getSlackId())
-                .text(buildSlackText(delivery))
+                .text(buildSlackText(delivery, order))
                 .createdAt(new Timestamp(System.currentTimeMillis()))
                 .eventId(eventId)
                 .build();
@@ -85,7 +95,7 @@ public class SlackService {
     }
 
     /** 허브·주문·상품·AI 정보를 모아 알림 문구를 만든다 (외부 API 호출 포함) */
-    private String buildSlackText(DeliveryInfoDto deliveryResponseDto) {
+    private String buildSlackText(DeliveryInfoDto deliveryResponseDto, OrderSlackDto orderSlackDto) {
 
         // 1. hubId로 hub 주소 찾기
         HubResponseDto hubStartResponseDto = hubClient.getAddressByHubId(deliveryResponseDto.getDepartureHubId());
@@ -104,7 +114,6 @@ public class SlackService {
                 });
 
         // 주문 상품 정보 추가
-        OrderSlackDto orderSlackDto = orderClient.getOrderInfo(deliveryResponseDto.getOrderId());
 
         // 주문 정보(수량, 주문 번호)
         UUID orderId = deliveryResponseDto.getOrderId();

@@ -59,7 +59,7 @@ public class OrderService {
             stock = productClient.decreaseStock(productId, new ProductStockRequestDto(productId, quantity, orderId));
         } catch (Exception e) {
             // timeout 등: 실제로 깎였는지 알 수 없으므로 되돌린다 (product 가 멱등이라 안 깎였으면 아무 일도 없음)
-            compensate(orderId, productId, quantity, "재고 차감 실패: " + e.getClass().getSimpleName());
+            compensate(orderId, productId, quantity, "재고 차감 실패: " + e.getClass().getSimpleName(), false);
             throw new RuntimeException("재고 처리 중 오류로 주문을 완료할 수 없습니다.");
         }
         if (stock == null || !stock.isSuccess()) {
@@ -72,7 +72,8 @@ public class OrderService {
         try {
             deliveryId = deliveryClient.createDelivery(OrderDeliveryRequestDto.fromOrderRequest(requestDto, orderId), userIdHeader);
         } catch (Exception e) {
-            compensate(orderId, productId, quantity, "배송 생성 실패: " + e.getClass().getSimpleName());
+            // 응답만 끊기고 배송은 만들어졌을 수 있으므로 배송도 취소한다
+            compensate(orderId, productId, quantity, "배송 생성 실패: " + e.getClass().getSimpleName(), true);
             throw new RuntimeException("배송 생성 실패로 주문을 완료할 수 없습니다.");
         }
 
@@ -82,19 +83,22 @@ public class OrderService {
     }
 
     /**
-     * 보상: 재고를 되돌리고 주문을 FAILED 로.
+     * 보상: (필요하면 배송을 취소하고) 재고를 되돌린 뒤 주문을 FAILED 로.
      * 복구 호출이 실패하면 PROCESSING 으로 남겨 두고 복구 스케줄러가 다시 시도한다.
      * (product 의 복구는 주문 ID 로 멱등하므로 여러 번 시도해도 한 번만 반영된다)
      *
      * @return 보상 완료 여부
      */
-    public boolean compensate(UUID orderId, UUID productId, Long quantity, String reason) {
+    public boolean compensate(UUID orderId, UUID productId, Long quantity, String reason, boolean cancelDelivery) {
         try {
+            if (cancelDelivery) {
+                deliveryClient.cancelDeliveriesByOrder(orderId);   // 없으면 아무 일도 없음
+            }
             productClient.increaseStock(productId, quantity, orderId);
             orderSagaStore.fail(orderId, reason);
             return true;
         } catch (Exception e) {
-            log.error("재고 보상 실패 - 복구 스케줄러가 재시도 orderId={}: {}", orderId, e.toString());
+            log.error("보상 실패 - 복구 스케줄러가 재시도 orderId={}: {}", orderId, e.toString());
             return false;
         }
     }
@@ -174,6 +178,7 @@ public class OrderService {
         return OrderSlackDto.builder()
                 .quantity(quantity)
                 .request(request)
+                .status(order.getStatus().name())
                 .build();
     }
 }

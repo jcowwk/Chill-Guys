@@ -161,6 +161,26 @@ class DeliveryAssignmentIntegrationTest extends OutboxIntegrationTestSupport {
         }
     }
 
+    @Test
+    void 주문_ID_로_취소한_배송은_배정되지_않고_다시_취소해도_안전하다() {
+        Delivery cancelled = save();
+        Delivery other = save();
+        DeliveryManagerInfoDto m = manager(9L);
+        when(deliveryManagerClient.assignDeliveryManager(any(), any(), any())).thenReturn(m);
+
+        assertThat(deliveryService.cancelByOrderId(cancelled.getOrderId())).isEqualTo(1);
+        assertThat(deliveryService.cancelByOrderId(cancelled.getOrderId())).isZero();     // 두 번째는 할 일 없음
+        assertThat(deliveryService.cancelByOrderId(UUID.randomUUID())).isZero();           // 없는 주문도 안전
+
+        PendingAssignmentLoop.Result r = deliveryService.assignPendingDeliveries();
+
+        assertThat(r.assigned()).isEqualTo(1);
+        assertThat(deliveryRepository.findById(cancelled.getId()).orElseThrow().getDeletedAt()).isNotNull();
+        assertThat(status(cancelled)).isEqualTo(DeliveryStatus.PENDING);
+        assertThat(status(other)).isEqualTo(DeliveryStatus.SHIPPING);
+        assertThat(outboxEventRepository.findAll()).extracting(OutboxEvent::getAggregateId).containsExactly(other.getId());
+    }
+
     private DeliveryStatus status(Delivery d) {
         return deliveryRepository.findById(d.getId()).orElseThrow().getDeliveryStatus();
     }

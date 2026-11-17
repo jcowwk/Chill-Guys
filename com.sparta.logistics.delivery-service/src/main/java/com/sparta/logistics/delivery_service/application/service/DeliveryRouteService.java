@@ -113,6 +113,13 @@ public class DeliveryRouteService {
     }
 
 
+    /** 배송 취소 시 경로도 함께 취소 (배정 대상에서 제외) */
+    public void cancelRoutes(UUID deliveryId) {
+        for (DeliveryRoute route : deliveryRouteRepository.findByDeliveryIdAndDeletedAtIsNull(deliveryId)) {
+            route.deletedOf(null);
+        }
+    }
+
     /** 배정 대기 배송경로를 건별 트랜잭션으로 처리한다 (트랜잭션 경계는 DeliveryAssignmentProcessor). */
     public PendingAssignmentLoop.Result assignPendingDeliveries() {
         return PendingAssignmentLoop.run("RouteAssign", assignmentBatchSize, assignmentMaxRunMs, deliveryAssignmentExecutor,
