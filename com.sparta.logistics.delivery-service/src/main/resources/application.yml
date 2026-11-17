@@ -50,7 +50,8 @@ outbox:
 kafka:
   topic:
     partitions: 3   # = slack-service 컨슈머 병렬 처리 상한
-    replicas: 1     # 운영(브로커 3대 이상)에서는 3 권장
+    replicas: 1     # 브로커 1대 구성 (브로커 수보다 크면 토픽 생성 실패)
+    min-insync-replicas: 1   # 복제본 수 이하 (더 크면 acks=all 발행이 계속 실패)
 
 # 배송 담당자 배정 스케줄러 (건별 트랜잭션)
 delivery:

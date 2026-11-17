@@ -8,6 +8,7 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -132,6 +133,7 @@ public class ConsumerApplicationKafkaConfig {
     public KafkaTemplate<Object, Object> deadLetterKafkaTemplate() {
         Map<String, Object> configProps = new HashMap<>();
         configProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        // 브로커 1대 구성: 복제본이 1개라 acks=all 은 리더 기록 확인과 같다 (멱등 프로듀서에 필요)
         configProps.put(ProducerConfig.ACKS_CONFIG, "all");
         configProps.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         DefaultKafkaProducerFactory<Object, Object> producerFactory = new DefaultKafkaProducerFactory<>(
@@ -141,12 +143,21 @@ public class ConsumerApplicationKafkaConfig {
 
     @Bean
     public NewTopic hubDeadLetterTopic() {
-        return TopicBuilder.name(KafkaTopics.HUB + KafkaTopics.DLT_SUFFIX).partitions(1).replicas(1).build();
+        return deadLetterTopic(KafkaTopics.HUB);
     }
 
     @Bean
     public NewTopic companyDeadLetterTopic() {
-        return TopicBuilder.name(KafkaTopics.COMPANY + KafkaTopics.DLT_SUFFIX).partitions(1).replicas(1).build();
+        return deadLetterTopic(KafkaTopics.COMPANY);
+    }
+
+    /** 브로커 1대 구성: 복제본 1개, min.insync.replicas 1 */
+    private static NewTopic deadLetterTopic(String topic) {
+        return TopicBuilder.name(topic + KafkaTopics.DLT_SUFFIX)
+                .partitions(1)
+                .replicas(1)
+                .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "1")
+                .build();
     }
 
     /** 로그에는 감싸진 리스너 예외 대신 실제 원인을 남긴다 */
