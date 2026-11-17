@@ -5,7 +5,9 @@ import com.sparta.logistics.delivery_service.application.dto.request.DeliveryUpd
 import com.sparta.logistics.delivery_service.application.dto.response.DeliveryResponseDto;
 import com.sparta.logistics.delivery_service.application.mapper.DeliveryMapper;
 import com.sparta.logistics.delivery_service.domain.model.Delivery;
+import com.sparta.logistics.delivery_service.domain.model.DeliveryCancellation;
 import com.sparta.logistics.delivery_service.domain.model.DeliveryStatus;
+import com.sparta.logistics.delivery_service.domain.repository.DeliveryCancellationRepository;
 import com.sparta.logistics.delivery_service.domain.repository.DeliveryRepository;
 import com.sparta.logistics.delivery_service.exception.CustomException;
 import com.sparta.logistics.delivery_service.exception.DeliveryErrorCode;
@@ -17,6 +19,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -29,6 +32,7 @@ public class DeliveryService {
 
     private final DeliveryRepository deliveryRepository;
     private final DeliveryRouteService deliveryRouteService;
+    private final DeliveryCancellationRepository deliveryCancellationRepository;
 
     private final CompanyClient companyClient;
     private final ProductClient productClient;
@@ -51,7 +55,18 @@ public class DeliveryService {
         // 2. 수령 업체 보고 도착 허브 결정
         UUID destinationHubId = companyClient.getHubIdByCompanyId(orderDeliveryRequestDto.getRequestCompanyId());
 
-        // 3. 배송 저장
+        // 3. 같은 주문의 취소와 순서를 맞춘다: 취소가 먼저 끝났으면 만들지 않는다
+        //    (주문 쪽이 생성 응답을 기다리다 포기하고 바로 취소한 경우, 이 생성이 취소보다 늦게 커밋되면 배송이 남는다)
+        UUID orderId = orderDeliveryRequestDto.getOrderId();
+        if (orderId != null) {
+            deliveryCancellationRepository.lockOrder(orderId);
+            if (deliveryCancellationRepository.existsById(orderId)) {
+                log.warn("취소된 주문의 늦은 배송 생성 거절 orderId={}", orderId);
+                throw new CustomException(DeliveryErrorCode.ORDER_CANCELLED);
+            }
+        }
+
+        // 4. 배송 저장
         Delivery delivery = DeliveryMapper.toEntity(orderDeliveryRequestDto, departureHubId, destinationHubId);
         deliveryRepository.save(delivery);
 
@@ -91,12 +106,18 @@ public class DeliveryService {
     /**
      * 주문 생성이 실패해 보상할 때 그 주문의 배송을 취소한다 (배송·경로를 소프트 삭제 → 배정 대상에서 빠짐).
      * 배송 생성 응답만 끊기고 실제로는 만들어진 경우를 정리하기 위함이다. 없으면 아무것도 하지 않는다 (여러 번 호출해도 안전).
+     * 취소 표시를 남겨, 이 취소보다 늦게 도착한 같은 주문의 배송 생성은 거절된다.
      * 이미 배정되어 알림 이벤트가 나간 경우는 알림 서비스가 주문 상태를 확인해 걸러낸다.
      *
      * @return 취소한 배송 수
      */
     @Transactional
     public int cancelByOrderId(UUID orderId) {
+        // 생성 중인 같은 주문의 배송이 있으면 그 커밋을 기다린 뒤 취소한다
+        deliveryCancellationRepository.lockOrder(orderId);
+        if (!deliveryCancellationRepository.existsById(orderId)) {
+            deliveryCancellationRepository.save(new DeliveryCancellation(orderId, LocalDateTime.now()));
+        }
         List<Delivery> deliveries = deliveryRepository.findByOrderIdAndDeletedAtIsNull(orderId);
         for (Delivery delivery : deliveries) {
             if (delivery.getDeliveryStatus() != DeliveryStatus.PENDING) {
