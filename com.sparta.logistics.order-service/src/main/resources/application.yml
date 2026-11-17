@@ -11,7 +11,12 @@ spring:
     username: ${POSTGRES_USER}
     password: ${POSTGRES_PASSWORD}
     url: jdbc:postgresql://${POSTGRES_HOST_ORDER}/team7
+  # 시작할 때 schema.sql 실행 (새 컬럼, 상태 제약 보정). DDL_AUTO 가 none 이어도 반영된다.
+  sql:
+    init:
+      mode: always
   jpa:
+    defer-datasource-initialization: true   # Hibernate DDL 이 먼저, 그다음 schema.sql
     hibernate:
       ddl-auto: ${DDL_AUTO}
     properties:
@@ -27,3 +32,9 @@ eureka:
     fetch-registry: true
     service-url:
       defaultZone: http://${EUREKA_URL}/eureka/
+
+# 주문 생성 Saga: 처리 중 멈춘 주문 자동 복구
+order:
+  saga:
+    recover-after-ms: 300000      # PROCESSING 으로 5분 넘게 남으면 보상 (재고·배송 호출 timeout 합보다 길게)
+    recovery-interval-ms: 60000

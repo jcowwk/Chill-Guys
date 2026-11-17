@@ -15,5 +15,7 @@ import java.util.UUID;
 public class ProductStockRequestDto {
     private UUID productId;
     private Long quantity;
+    /** 멱등 키: 같은 주문의 차감이 여러 번 가도 product-service 는 한 번만 반영한다 */
+    private UUID orderId;
 }
 
