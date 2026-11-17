@@ -87,6 +87,14 @@ kafka:
       max-retries: 3
       initial-interval-ms: 1000
       max-interval-ms: 10000
+      transient:              # 내부 서비스 연결 거부·timeout·5xx: 재시작 중일 수 있어 길게 (약 3분)
+        max-retries: 10
+        initial-interval-ms: 1000
+        max-interval-ms: 30000  # 한 번 대기는 max.poll.interval(5분)보다 짧게
   dlt:
     replay:
       max-replay-count: 3   # 같은 메시지를 DLT 에서 재투입할 수 있는 최대 횟수 (무한 루프 방지)
+    auto-replay:
+      enabled: true
+      interval-ms: 600000   # 10분마다 DLT 를 원본 토픽에 다시 넣음 (영구 Slack 오류 제외)
+      batch-size: 500

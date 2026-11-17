@@ -10,6 +10,7 @@ import com.sparta.logistics.slack_service.application.service.SlackService;
 import com.sparta.logistics.slack_service.domain.entity.ProcessedEvent;
 import com.sparta.logistics.slack_service.domain.repository.ProcessedEventRepository;
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
+import com.sparta.logistics.slack_service.infrastructure.slack.SlackPermanentException;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -204,6 +205,45 @@ class DltReplayIntegrationTest {
         assertThat(deleted).isGreaterThanOrEqualTo(1);
         assertThat(processedEventRepository.existsById("old-event")).isFalse();
         assertThat(processedEventRepository.existsById("recent-event")).isTrue();
+    }
+
+    @Test
+    @Order(6)
+    void 자동_재처리는_시간이_지나면_풀리는_실패만_다시_넣고_영구_Slack_오류는_수동_재처리에_남긴다() {
+        UUID retryOrderId = UUID.randomUUID();
+        UUID permanentOrderId = UUID.randomUUID();
+        String retryEventId = UUID.randomUUID().toString();
+        String permanentEventId = UUID.randomUUID().toString();
+        doThrow(new RuntimeException("order-service 응답 없음"))
+                .when(slackService).processNotification(orderIdIs(retryOrderId), any());
+        doThrow(new SlackPermanentException("Slack 발송 거부: channel_not_found"))
+                .when(slackService).processNotification(orderIdIs(permanentOrderId), any());
+
+        send(retryEventId, json(retryOrderId));
+        send(permanentEventId, json(permanentOrderId));
+        awaitInDlt(retryEventId);
+        awaitInDlt(permanentEventId);
+
+        // 장애 복구 후 스케줄러가 실행된 상황
+        Mockito.reset(slackService);
+        DltReplayResponseDto auto = dltReplayService.autoReplay("HUB", 500);
+
+        assertThat(find(auto, retryEventId)).hasValueSatisfying(i -> assertThat(i.action()).isEqualTo(Action.REPLAYED));
+        assertThat(find(auto, permanentEventId)).hasValueSatisfying(i -> {
+            assertThat(i.action()).isEqualTo(Action.SKIPPED_PERMANENT);
+            assertThat(i.replayCount()).isZero();   // 재처리 횟수를 쓰지 않음
+        });
+        verify(slackService, timeout(20_000)).processNotification(orderIdIs(retryOrderId), any());
+        await().atMost(Duration.ofSeconds(10)).until(() -> processedEventRepository.existsById(retryEventId));
+        verify(slackService, never()).processNotification(orderIdIs(permanentOrderId), any());
+
+        // 영구 오류 메시지는 수동 재처리 대상으로 그대로 남아 있다
+        assertThat(find(dltReplayService.peek("HUB", 100), permanentEventId))
+                .hasValueSatisfying(i -> assertThat(i.action()).isEqualTo(Action.WOULD_REPLAY));
+        // 자동 재처리는 같은 메시지를 다시 보지 않는다
+        DltReplayResponseDto again = dltReplayService.autoReplay("HUB", 500);
+        assertThat(find(again, retryEventId)).isEmpty();
+        assertThat(find(again, permanentEventId)).isEmpty();
     }
 
     // ---------------------------------------------------------------------------------------------

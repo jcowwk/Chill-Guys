@@ -74,6 +74,9 @@ class KafkaConsumerIntegrationTest {
         registry.add("slack.api.url", () -> "http://localhost:1");
         registry.add("kafka.consumer.retry.initial-interval-ms", () -> "200");
         registry.add("kafka.consumer.retry.max-interval-ms", () -> "500");
+        registry.add("kafka.consumer.retry.transient.max-retries", () -> "6");
+        registry.add("kafka.consumer.retry.transient.initial-interval-ms", () -> "100");
+        registry.add("kafka.consumer.retry.transient.max-interval-ms", () -> "200");
     }
 
     @MockitoBean SlackService slackService;
@@ -180,6 +183,22 @@ class KafkaConsumerIntegrationTest {
         assertThat(header(dlt, "kafka_dlt-exception-message")).contains("hub-service 장애");
         // 실패한 이벤트는 처리완료로 기록되지 않아 DLT 재처리 시 다시 처리 가능
         assertThat(processedEventRepository.existsById(eventId)).isFalse();
+    }
+
+    @Test
+    void 내부_서비스_연결_실패는_더_오래_재시도해서_복구되면_DLT_없이_처리한다() {
+        UUID orderId = UUID.randomUUID();
+        String eventId = UUID.randomUUID().toString();
+        RuntimeException down = new RuntimeException("order-service 재시작 중",
+                new java.net.ConnectException("Connection refused"));
+        // 기본 재시도(3회)보다 많은 5번 연속 실패 후 복구
+        doThrow(down).doThrow(down).doThrow(down).doThrow(down).doThrow(down).doNothing()
+                .when(slackService).processNotification(orderIdIs(orderId), any());
+
+        send(KafkaTopics.HUB, "delivery-transient", json(orderId), Map.of(KafkaTopics.EVENT_ID_HEADER, eventId));
+
+        verify(slackService, timeout(30_000).times(6)).processNotification(orderIdIs(orderId), any());
+        await().atMost(Duration.ofSeconds(10)).until(() -> processedEventRepository.existsById(eventId));
     }
 
     @Test
