@@ -126,7 +126,39 @@ class OrderSagaTest {
         Order order = onlyOrder();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.FAILED);
         assertThat(order.getFailureReason()).startsWith("배송 생성 실패");
-        verify(productClient).increaseStock(productId, 2L, order.getOrderId());
+        // 응답만 끊기고 배송은 만들어졌을 수 있으므로 배송 취소 → 재고 복구 순서로 보상
+        var inOrder = inOrder(deliveryClient, productClient);
+        inOrder.verify(deliveryClient).cancelDeliveriesByOrder(order.getOrderId());
+        inOrder.verify(productClient).increaseStock(productId, 2L, order.getOrderId());
+    }
+
+    @Test
+    @DisplayName("배송 취소 호출이 실패하면 보상을 끝내지 않고 PROCESSING 으로 남겨 복구 스케줄러가 다시 시도한다")
+    void deliveryCancelFailure_staysProcessing_thenRecovered() {
+        when(productClient.decreaseStock(any(), any())).thenReturn(stock(true));
+        when(deliveryClient.createDelivery(any(), any())).thenThrow(new RuntimeException("Read timed out"));
+        when(deliveryClient.cancelDeliveriesByOrder(any())).thenThrow(new RuntimeException("delivery-service down"));
+
+        assertThatThrownBy(() -> orderService.createOrder(request(), "1")).isInstanceOf(RuntimeException.class);
+        assertThat(onlyOrder().getStatus()).isEqualTo(OrderStatus.PROCESSING);
+        verify(productClient, never()).increaseStock(any(), any(), any());
+
+        reset(deliveryClient);
+        when(deliveryClient.cancelDeliveriesByOrder(any())).thenReturn(1);
+        when(productClient.increaseStock(any(), any(), any())).thenReturn(stock(true));
+        recoveryScheduler.recover(Instant.now().plusSeconds(60));
+
+        assertThat(onlyOrder().getStatus()).isEqualTo(OrderStatus.FAILED);
+        verify(deliveryClient).cancelDeliveriesByOrder(onlyOrder().getOrderId());
+    }
+
+    @Test
+    @DisplayName("알림 서비스용 주문 정보에 주문 상태를 담아 준다")
+    void orderInfo_includesStatus() {
+        when(productClient.decreaseStock(any(), any())).thenReturn(stock(false));
+        assertThatThrownBy(() -> orderService.createOrder(request(), "1")).isInstanceOf(RuntimeException.class);
+
+        assertThat(orderService.getOrderInfo(onlyOrder().getOrderId()).getStatus()).isEqualTo("FAILED");
     }
 
     @Test
@@ -147,6 +179,8 @@ class OrderSagaTest {
         assertThat(recovered).isEqualTo(1);
         assertThat(onlyOrder().getStatus()).isEqualTo(OrderStatus.FAILED);
         verify(productClient).increaseStock(productId, 2L, onlyOrder().getOrderId());
+        // 어느 단계에서 멈췄는지 모르므로 복구 때는 배송 취소도 함께
+        verify(deliveryClient, atLeastOnce()).cancelDeliveriesByOrder(onlyOrder().getOrderId());
     }
 
     @Test

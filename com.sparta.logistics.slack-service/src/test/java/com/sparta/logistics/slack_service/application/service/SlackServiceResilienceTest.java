@@ -67,7 +67,7 @@ class SlackServiceResilienceTest {
         when(slackRepository.findById(any(UUID.class))).thenAnswer(inv -> Optional.ofNullable(store.get(inv.<UUID>getArgument(0))));
 
         when(hubClient.getAddressByHubId(any())).thenReturn(HubResponseDto.builder().hubName("서울 허브").address("서울시").build());
-        when(orderClient.getOrderInfo(any())).thenReturn(new OrderSlackDto(3L, "빠른 배송"));
+        when(orderClient.getOrderInfo(any())).thenReturn(new OrderSlackDto(3L, "빠른 배송", "PENDING"));
         when(productClient.getProductName(any())).thenReturn("상품A");
         when(slackClient.sendSlackMessage(anyString(), any())).thenReturn("{\"ok\":true}");
     }
@@ -157,6 +157,18 @@ class SlackServiceResilienceTest {
         verify(aiClient, times(1)).generateCompletion(anyString());
         verify(hubClient, times(2)).getAddressByHubId(any());
         verify(slackClient, times(2)).sendSlackMessage(anyString(), any());
+    }
+
+    @Test
+    @DisplayName("Kafka 알림: 주문이 실패(FAILED)했거나 취소됐으면 알림을 만들지도 보내지도 않는다")
+    void processNotification_skipsFailedOrder() {
+        when(orderClient.getOrderInfo(any())).thenReturn(new OrderSlackDto(3L, "빠른 배송", "FAILED"));
+
+        slackService(productionFactory()).processNotification(delivery(), "event-failed");
+
+        verify(slackClient, never()).sendSlackMessage(anyString(), any());
+        verify(slackRepository, never()).save(any(Slack.class));
+        verifyNoInteractions(aiClient, hubClient);
     }
 
     private SlackService slackService(Resilience4JCircuitBreakerFactory factory) {

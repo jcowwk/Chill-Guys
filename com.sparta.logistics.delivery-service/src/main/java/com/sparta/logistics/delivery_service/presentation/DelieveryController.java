@@ -70,6 +70,12 @@ public class DelieveryController {
     /**
      * 배송 삭제
      */
+    /** 주문 생성 실패 보상: 주문의 배송을 취소한다 (없으면 0) */
+    @PostMapping("/orders/{order_id}/cancel")
+    public ResponseEntity<Integer> cancelByOrder(@PathVariable("order_id") UUID orderId) {
+        return ResponseEntity.ok(deliveryService.cancelByOrderId(orderId));
+    }
+
     @DeleteMapping("/{delivery_id}")
     public ResponseEntity<Void> deleteDelivery(@PathVariable("delivery_id") UUID deliveryId,
                                                @RequestHeader(value = "X-User-Id") String userId) {

@@ -90,6 +90,27 @@ public class DeliveryService {
         deliveryRepository.save(delivery);
     }
 
+    /**
+     * 주문 생성이 실패해 보상할 때 그 주문의 배송을 취소한다 (배송·경로를 소프트 삭제 → 배정 대상에서 빠짐).
+     * 배송 생성 응답만 끊기고 실제로는 만들어진 경우를 정리하기 위함이다. 없으면 아무것도 하지 않는다 (여러 번 호출해도 안전).
+     * 이미 배정되어 알림 이벤트가 나간 경우는 알림 서비스가 주문 상태를 확인해 걸러낸다.
+     *
+     * @return 취소한 배송 수
+     */
+    @Transactional
+    public int cancelByOrderId(UUID orderId) {
+        List<Delivery> deliveries = deliveryRepository.findByOrderIdAndDeletedAtIsNull(orderId);
+        for (Delivery delivery : deliveries) {
+            if (delivery.getDeliveryStatus() != DeliveryStatus.PENDING) {
+                log.warn("이미 배정된 배송 취소 deliveryId={}, status={} - 알림은 알림 서비스에서 주문 상태로 거름",
+                        delivery.getId(), delivery.getDeliveryStatus());
+            }
+            delivery.deletedOf(null);
+            deliveryRouteService.cancelRoutes(delivery.getId());
+        }
+        return deliveries.size();
+    }
+
     @Transactional
     public void deleteDelivery(UUID deliveryId, String userId) {
         Delivery delivery = findDeliveryById(deliveryId);
