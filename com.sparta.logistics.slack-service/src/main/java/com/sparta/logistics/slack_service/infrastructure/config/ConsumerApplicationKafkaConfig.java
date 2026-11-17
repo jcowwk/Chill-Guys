@@ -1,6 +1,7 @@
 package com.sparta.logistics.slack_service.infrastructure.config;
 
 import com.sparta.logistics.slack_service.infrastructure.config.kafka.KafkaTopics;
+import com.sparta.logistics.slack_service.infrastructure.config.kafka.TransientFailures;
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
 import com.sparta.logistics.slack_service.infrastructure.monitoring.NotificationMetrics;
 import com.sparta.logistics.slack_service.infrastructure.slack.SlackPermanentException;
@@ -10,6 +11,7 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -65,6 +67,16 @@ public class ConsumerApplicationKafkaConfig {
 
     @Value("${kafka.consumer.retry.max-interval-ms:10000}")
     private long maxIntervalMs;
+
+    /** 내부 서비스가 잠깐 멈춘 경우(연결 거부, 5xx)의 재시도: 기본 재시도보다 길게 기다린다 */
+    @Value("${kafka.consumer.retry.transient.max-retries:10}")
+    private int transientMaxRetries;
+
+    @Value("${kafka.consumer.retry.transient.initial-interval-ms:1000}")
+    private long transientInitialIntervalMs;
+
+    @Value("${kafka.consumer.retry.transient.max-interval-ms:30000}")
+    private long transientMaxIntervalMs;
 
     @Bean
     public ConsumerFactory<String, DeliveryInfoDto> consumerFactory() {
@@ -125,12 +137,16 @@ public class ConsumerApplicationKafkaConfig {
                     return new TopicPartition(record.topic() + KafkaTopics.DLT_SUFFIX, -1);
                 });
 
-        ExponentialBackOffWithMaxRetries backOff = new ExponentialBackOffWithMaxRetries(maxRetries);
-        backOff.setInitialInterval(initialIntervalMs);
-        backOff.setMultiplier(2.0);
-        backOff.setMaxInterval(maxIntervalMs);
+        ExponentialBackOffWithMaxRetries backOff = backOff(maxRetries, initialIntervalMs, maxIntervalMs);
+        // 기본값(10회, 1s 2s 4s 8s 16s 뒤로는 30s 간격)이면 약 3분 동안 다시 시도한다.
+        // 한 번의 대기는 max.poll.interval(5분)보다 짧아야 컨슈머가 그룹에서 빠지지 않는다.
+        ExponentialBackOffWithMaxRetries transientBackOff =
+                backOff(transientMaxRetries, transientInitialIntervalMs, transientMaxIntervalMs);
 
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, backOff);
+        // order 등 내부 서비스 재시작 중에는 몇 초 안에 DLT 로 가지 않도록 길게 재시도
+        errorHandler.setBackOffFunction((record, ex) ->
+                TransientFailures.isTransient(ex) ? transientBackOff : null);
         // 다시 보내도 성공하지 않는 Slack 오류(채널 없음, 토큰 오류 등)는 재시도 없이 바로 DLT 로
         errorHandler.addNotRetryableExceptions(SlackPermanentException.class);
         errorHandler.setRetryListeners((record, ex, deliveryAttempt) -> {
@@ -148,6 +164,7 @@ public class ConsumerApplicationKafkaConfig {
     public KafkaTemplate<Object, Object> deadLetterKafkaTemplate() {
         Map<String, Object> configProps = new HashMap<>();
         configProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        // 브로커 1대 구성: 복제본이 1개라 acks=all 은 리더 기록 확인과 같다 (멱등 프로듀서에 필요)
         configProps.put(ProducerConfig.ACKS_CONFIG, "all");
         configProps.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         DefaultKafkaProducerFactory<Object, Object> producerFactory = new DefaultKafkaProducerFactory<>(
@@ -157,12 +174,29 @@ public class ConsumerApplicationKafkaConfig {
 
     @Bean
     public NewTopic hubDeadLetterTopic() {
-        return TopicBuilder.name(KafkaTopics.HUB + KafkaTopics.DLT_SUFFIX).partitions(1).replicas(1).build();
+        return deadLetterTopic(KafkaTopics.HUB);
     }
 
     @Bean
     public NewTopic companyDeadLetterTopic() {
-        return TopicBuilder.name(KafkaTopics.COMPANY + KafkaTopics.DLT_SUFFIX).partitions(1).replicas(1).build();
+        return deadLetterTopic(KafkaTopics.COMPANY);
+    }
+
+    /** 브로커 1대 구성: 복제본 1개, min.insync.replicas 1 */
+    private static NewTopic deadLetterTopic(String topic) {
+        return TopicBuilder.name(topic + KafkaTopics.DLT_SUFFIX)
+                .partitions(1)
+                .replicas(1)
+                .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, "1")
+                .build();
+    }
+
+    private static ExponentialBackOffWithMaxRetries backOff(int retries, long initialMs, long maxMs) {
+        ExponentialBackOffWithMaxRetries backOff = new ExponentialBackOffWithMaxRetries(retries);
+        backOff.setInitialInterval(initialMs);
+        backOff.setMultiplier(2.0);
+        backOff.setMaxInterval(maxMs);
+        return backOff;
     }
 
     /** 지표 태그용: 원인 예외 클래스 이름 (개인정보 없음) */

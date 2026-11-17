@@ -2,9 +2,11 @@ package com.sparta.logistics.delivery_service.domain.repository;
 
 import com.sparta.logistics.delivery_service.domain.model.DeliveryCancellation;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 public interface DeliveryCancellationRepository extends JpaRepository<DeliveryCancellation, UUID> {
@@ -15,4 +17,8 @@ public interface DeliveryCancellationRepository extends JpaRepository<DeliveryCa
      */
     @Query(value = "SELECT 1 FROM pg_advisory_xact_lock(hashtextextended(CAST(:orderId AS text), 0))", nativeQuery = true)
     Integer lockOrder(@Param("orderId") UUID orderId);
+
+    @Modifying
+    @Query("DELETE FROM DeliveryCancellation c WHERE c.cancelledAt < :before")
+    int deleteCancelledBefore(@Param("before") LocalDateTime before);
 }

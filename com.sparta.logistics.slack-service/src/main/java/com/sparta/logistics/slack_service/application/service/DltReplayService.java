@@ -32,7 +32,11 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * DLT(<topic>.DLT)에 격리된 메시지를 조회하고, 원인을 해결한 뒤 원본 토픽으로 재투입한다.
  *
- * - 자동 재처리는 하지 않는다: 원인이 그대로면 원본 → 실패 → DLT 로 무한히 돈다. 운영자가 원인 해결 후 실행한다.
+ * - 수동 재처리(replay): 운영자가 원인을 해결한 뒤 실행한다.
+ * - 자동 재처리(autoReplay): 스케줄러가 주기적으로 실행한다. 내부 서비스가 오래 멈췄다 돌아온 경우처럼
+ *   시간이 지나면 풀리는 실패를 사람 없이 다시 처리한다. 다시 보내도 성공하지 않는 Slack 오류(채널 없음 등)는
+ *   재처리 횟수를 쓰지 않도록 건너뛰고, 수동 재처리에 남겨 둔다 (자동과 수동은 오프셋을 따로 관리).
+ * - 원인이 그대로면 원본 → 실패 → DLT 로 돌기 때문에 재처리 횟수 한도를 둔다.
  * - eventId 헤더를 유지하므로, 이미 처리된 메시지는 컨슈머의 멱등 처리로 걸러진다.
  * - 재처리 횟수 헤더(x-replay-count)를 붙이고 한도를 넘으면 더 이상 재투입하지 않는다.
  * - 역직렬화 불가(poison) 메시지는 재투입해도 실패하므로 제외하고 결과로만 알린다.
@@ -45,6 +49,7 @@ public class DltReplayService {
     public static final String REPLAY_COUNT_HEADER = "x-replay-count";
     private static final Set<String> ALLOWED_TOPICS = Set.of(KafkaTopics.HUB, KafkaTopics.COMPANY);
     private static final String DLT_HEADER_PREFIX = "kafka_dlt-";
+    private static final String PERMANENT_EXCEPTION = "SlackPermanentException";
 
     private final KafkaTemplate<Object, Object> kafkaTemplate;
     private final String bootstrapServers;
@@ -64,15 +69,20 @@ public class DltReplayService {
 
     /** 재투입 대상만 조회한다 (오프셋 커밋 없음 → 몇 번을 호출해도 같은 결과). */
     public DltReplayResponseDto peek(String topic, int max) {
-        return run(topic, max, true);
+        return run(topic, max, true, false);
     }
 
     /** 원본 토픽으로 재투입하고 처리한 지점까지 오프셋을 커밋한다. */
     public DltReplayResponseDto replay(String topic, int max) {
-        return run(topic, max, false);
+        return run(topic, max, false, false);
     }
 
-    private DltReplayResponseDto run(String topic, int max, boolean dryRun) {
+    /** 스케줄러용: 다시 보내도 성공하지 않는 Slack 오류를 빼고 재투입한다. 자동 재처리 전용 오프셋을 쓴다. */
+    public DltReplayResponseDto autoReplay(String topic, int max) {
+        return run(topic, max, false, true);
+    }
+
+    private DltReplayResponseDto run(String topic, int max, boolean dryRun, boolean auto) {
         if (!ALLOWED_TOPICS.contains(topic)) {
             throw new IllegalArgumentException("지원하지 않는 토픽입니다: " + topic + " (허용: " + ALLOWED_TOPICS + ")");
         }
@@ -83,14 +93,15 @@ public class DltReplayService {
         if (!lock.tryLock()) {
             throw new IllegalStateException("이미 DLT 재처리가 진행 중입니다. 잠시 후 다시 시도하세요.");
         }
-        try (KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps(topic, max))) {
-            return process(consumer, topic, max, dryRun);
+        try (KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(consumerProps(topic, max, auto))) {
+            return process(consumer, topic, max, dryRun, auto);
         } finally {
             lock.unlock();
         }
     }
 
-    private DltReplayResponseDto process(KafkaConsumer<String, byte[]> consumer, String topic, int max, boolean dryRun) {
+    private DltReplayResponseDto process(KafkaConsumer<String, byte[]> consumer, String topic, int max,
+                                         boolean dryRun, boolean auto) {
         String dltTopic = topic + KafkaTopics.DLT_SUFFIX;
         List<PartitionInfo> partitions = consumer.partitionsFor(dltTopic, Duration.ofMillis(pollTimeoutMs));
         if (partitions == null || partitions.isEmpty()) {
@@ -115,7 +126,7 @@ public class DltReplayService {
                 if (items.size() >= max) break outer;
                 TopicPartition tp = new TopicPartition(record.topic(), record.partition());
                 if (record.offset() >= endOffsets.getOrDefault(tp, 0L)) continue; // 실행 이후 들어온 메시지는 다음 실행에서
-                Item item = handle(record, topic, dryRun);
+                Item item = handle(record, topic, dryRun, auto);
                 items.add(item);
                 if (item.action() == Action.REPLAYED || item.action() == Action.WOULD_REPLAY) replayed++;
                 else skipped++;
@@ -128,12 +139,16 @@ public class DltReplayService {
             consumer.commitSync(toCommit);
         }
         if (!dryRun) {
-            log.warn("[DLT] 재처리 실행 topic={}, 재투입={}, 제외={}", topic, replayed, skipped);
+            if (auto && items.isEmpty()) {
+                log.debug("[DLT] 자동 재처리 대상 없음 topic={}", topic);
+            } else {
+                log.warn("[DLT] {}재처리 실행 topic={}, 재투입={}, 제외={}", auto ? "자동 " : "", topic, replayed, skipped);
+            }
         }
         return new DltReplayResponseDto(topic, dryRun, items.size(), replayed, skipped, items);
     }
 
-    private Item handle(ConsumerRecord<String, byte[]> record, String topic, boolean dryRun) {
+    private Item handle(ConsumerRecord<String, byte[]> record, String topic, boolean dryRun, boolean auto) {
         Headers headers = record.headers();
         String eventId = text(headers, KafkaTopics.EVENT_ID_HEADER);
         String fqcn = text(headers, KafkaHeaders.DLT_EXCEPTION_FQCN);
@@ -143,6 +158,10 @@ public class DltReplayService {
 
         if (contains(fqcn, "DeserializationException") || contains(causeFqcn, "DeserializationException")) {
             return item(record, eventId, Action.SKIPPED_POISON, "역직렬화 불가 - 원본 메시지 형식 확인 필요", lastError, replayCount);
+        }
+        if (auto && (contains(fqcn, PERMANENT_EXCEPTION) || contains(causeFqcn, PERMANENT_EXCEPTION))) {
+            return item(record, eventId, Action.SKIPPED_PERMANENT,
+                    "다시 보내도 성공하지 않는 Slack 오류 - 원인 해결 후 수동 재처리", lastError, replayCount);
         }
         if (replayCount >= maxReplayCount) {
             return item(record, eventId, Action.SKIPPED_LIMIT,
@@ -173,10 +192,10 @@ public class DltReplayService {
         return endOffsets.entrySet().stream().allMatch(e -> consumer.position(e.getKey()) >= e.getValue());
     }
 
-    private Map<String, Object> consumerProps(String topic, int max) {
+    private Map<String, Object> consumerProps(String topic, int max, boolean auto) {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "slack-dlt-replay-" + topic);
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, (auto ? "slack-dlt-auto-replay-" : "slack-dlt-replay-") + topic);
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, max);

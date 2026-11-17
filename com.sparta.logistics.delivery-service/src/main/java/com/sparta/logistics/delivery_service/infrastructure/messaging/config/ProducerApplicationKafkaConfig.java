@@ -2,6 +2,7 @@ package com.sparta.logistics.delivery_service.infrastructure.messaging.config;
 
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.config.TopicConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -23,8 +24,13 @@ public class ProducerApplicationKafkaConfig {
     @Value("${kafka.topic.partitions:3}")
     private int partitions;
 
+    /** 브로커 1대 구성이라 복제본 1개. 브로커 수보다 크면 토픽 생성이 실패한다. */
     @Value("${kafka.topic.replicas:1}")
     private short replicas;
+
+    /** 복제본 수 이하여야 한다. 더 크면 acks=all 발행이 NotEnoughReplicas 로 계속 실패한다. */
+    @Value("${kafka.topic.min-insync-replicas:1}")
+    private int minInsyncReplicas;
 
     /**
      * Outbox payload 는 이미 JSON 문자열이므로 String 으로 그대로 발행한다.
@@ -37,7 +43,8 @@ public class ProducerApplicationKafkaConfig {
         configProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         configProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
 
-        // 유실 방지: 모든 ISR 복제 확인 + 재전송 시 중복 방지
+        // 브로커 1대 구성: 리더(=유일한 복제본)가 디스크에 기록하면 응답한다.
+        // 멱등 프로듀서는 acks=all 이 필요하고, 복제본이 1개라 acks=1 과 같은 지연으로 동작한다.
         configProps.put(ProducerConfig.ACKS_CONFIG, "all");
         configProps.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
 
@@ -61,13 +68,21 @@ public class ProducerApplicationKafkaConfig {
      * 파티션 수 = 컨슈머 병렬 처리의 상한 (auto-create 기본값 1 이면 컨슈머를 늘려도 1개 스레드만 일함).
      * 이미 존재하는 토픽은 파티션이 더 적을 때만 늘린다 (줄이지는 않음).
      */
+    private NewTopic topic(String name) {
+        return TopicBuilder.name(name)
+                .partitions(partitions)
+                .replicas(replicas)
+                .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, String.valueOf(minInsyncReplicas))
+                .build();
+    }
+
     @Bean
     public NewTopic hubTopic() {
-        return TopicBuilder.name("HUB").partitions(partitions).replicas(replicas).build();
+        return topic("HUB");
     }
 
     @Bean
     public NewTopic companyTopic() {
-        return TopicBuilder.name("COMPANY").partitions(partitions).replicas(replicas).build();
+        return topic("COMPANY");
     }
 }

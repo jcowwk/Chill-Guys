@@ -7,6 +7,7 @@ import java.util.Collections;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.Ordered;
+import org.springframework.http.HttpCookie;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -28,56 +29,49 @@ public class PreAuthWebFilter implements WebFilter, Ordered {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-        log.info("PreAuthWebFilter 필터 실행");
-
+        // 토큰 원문은 로그에 남기지 않는다
         String authHeader = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
-        log.info("추출한 Authorization 헤더: {}", authHeader);
 
         if (authHeader == null) {
             return chain.filter(exchange);
         }
 
         String accessToken = jwtUtil.removeBearer(authHeader);
-        log.info("Bearer 제거 후 토큰: {}", accessToken);
 
-        // 쿠키에서 refreshToken 가져오기
-        var cookies = exchange.getRequest().getCookies().get("refreshToken");
-        String refreshToken = cookies.get(0).getValue();
-        log.info("추출한 refreshToken 쿠키: {}", refreshToken);
+        // refreshToken 쿠키가 없으면 인증 실패(401)
+        HttpCookie refreshCookie = exchange.getRequest().getCookies().getFirst("refreshToken");
+        if (refreshCookie == null) {
+            log.warn("refreshToken 쿠키 없음 path={}", exchange.getRequest().getPath());
+            return unauthorized(exchange);
+        }
+        String refreshToken = refreshCookie.getValue();
 
-        // accessToken 검증
         if (!jwtUtil.validateToken(accessToken)) {
-            log.error("유효하지 않은 토큰입니다.");
-            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-            return exchange.getResponse().setComplete();
+            log.warn("유효하지 않은 accessToken path={}", exchange.getRequest().getPath());
+            return unauthorized(exchange);
         }
 
-        // refreshToken 검증
         if (!jwtUtil.validateToken(refreshToken)) {
-            log.error("유효하지 않은 토큰입니다.");
-            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-            return exchange.getResponse().setComplete();
+            log.warn("유효하지 않은 refreshToken path={}", exchange.getRequest().getPath());
+            return unauthorized(exchange);
         }
 
-        // accessToken 블랙리스트 체크
         if (blackListCheck.isBlacklisted(accessToken, "AT")) {
-            log.error("블랙리스트 토큰입니다. accessToken : " + accessToken);
-            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-            return exchange.getResponse().setComplete();
+            log.warn("블랙리스트 accessToken 사용 시도 path={}", exchange.getRequest().getPath());
+            return unauthorized(exchange);
         }
 
-        // refreshToken 블랙리스트 체크
-        if (blackListCheck.isBlacklisted(accessToken, "RT")) {
-            log.error("블랙리스트 토큰입니다. refreshToken : " + accessToken);
-            exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
-            return exchange.getResponse().setComplete();
+        // user-service 가 저장하는 키 형식과 맞춘다: "blacklist:RT:" + refreshToken
+        if (blackListCheck.isBlacklisted(refreshToken, "RT")) {
+            log.warn("블랙리스트 refreshToken 사용 시도 path={}", exchange.getRequest().getPath());
+            return unauthorized(exchange);
         }
 
         Claims claims = jwtUtil.getClaims(accessToken);
         String userId = claims.getSubject();
         String username = claims.get("username", String.class);
         String role = claims.get("role", String.class);
-        log.info("토큰에서 추출한 클레임 - userId: {}, username: {}, role: {}", userId, username, role);
+        log.debug("인증 성공 userId={}, role={}", userId, role);
 
         UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
             username,
@@ -85,7 +79,6 @@ public class PreAuthWebFilter implements WebFilter, Ordered {
             Collections.singletonList(new SimpleGrantedAuthority(role))
         );
         authToken.setDetails(userId);
-
         SecurityContext securityContext = new SecurityContextImpl(authToken);
 
         ServerWebExchange mutatedExchange = exchange.mutate()
@@ -100,6 +93,11 @@ public class PreAuthWebFilter implements WebFilter, Ordered {
 
         return chain.filter(mutatedExchange)
             .contextWrite(ReactiveSecurityContextHolder.withSecurityContext(Mono.just(securityContext)));
+    }
+
+    private static Mono<Void> unauthorized(ServerWebExchange exchange) {
+        exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+        return exchange.getResponse().setComplete();
     }
 
     @Override

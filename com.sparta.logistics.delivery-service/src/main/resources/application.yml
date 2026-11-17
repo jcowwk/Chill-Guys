@@ -66,10 +66,13 @@ outbox:
 kafka:
   topic:
     partitions: 3   # = slack-service 컨슈머 병렬 처리 상한
-    replicas: 1     # 운영(브로커 3대 이상)에서는 3 권장
+    replicas: 1     # 브로커 1대 구성 (브로커 수보다 크면 토픽 생성 실패)
+    min-insync-replicas: 1   # 복제본 수 이하 (더 크면 acks=all 발행이 계속 실패)
 
 # 배송 담당자 배정 스케줄러 (건별 트랜잭션)
 delivery:
+  cancellation:
+    retention-days: 30    # 주문 단위 배송 취소 표시 보관 기간 (늦게 온 배송 생성 거절용)
   assignment:
     batch-size: 200       # 한 번에 조회하는 대기 건 수 (ID 만 조회)
     max-run-ms: 50000     # 한 번 실행의 최대 시간 (스케줄 주기 60초보다 짧게)

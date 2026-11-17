@@ -22,6 +22,11 @@ spring:
         format_sql: true
         use_sql_comments: true
 
+# 주문별 재고 변동 기록(멱등 처리용) 보관 기간
+stock:
+  history:
+    retention-days: 30
+
 eureka:
   client:
     register-with-eureka: true

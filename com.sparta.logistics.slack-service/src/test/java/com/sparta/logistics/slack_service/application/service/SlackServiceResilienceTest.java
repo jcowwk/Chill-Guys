@@ -5,6 +5,7 @@ import com.sparta.logistics.slack_service.domain.entity.Slack;
 import com.sparta.logistics.slack_service.domain.repository.SlackRepository;
 import com.sparta.logistics.slack_service.infrastructure.client.*;
 import com.sparta.logistics.slack_service.infrastructure.config.ResilienceConfig;
+import com.sparta.logistics.slack_service.infrastructure.config.kafka.TransientFailures;
 import com.sparta.logistics.slack_service.infrastructure.dto.DeliveryInfoDto;
 import com.sparta.logistics.slack_service.infrastructure.dto.HubResponseDto;
 import com.sparta.logistics.slack_service.infrastructure.dto.OrderSlackDto;
@@ -165,6 +166,20 @@ class SlackServiceResilienceTest {
         when(orderClient.getOrderInfo(any())).thenReturn(new OrderSlackDto(3L, "빠른 배송", "FAILED"));
 
         slackService(productionFactory()).processNotification(delivery(), "event-failed");
+
+        verify(slackClient, never()).sendSlackMessage(anyString(), any());
+        verify(slackRepository, never()).save(any(Slack.class));
+        verifyNoInteractions(aiClient, hubClient);
+    }
+
+    @Test
+    @DisplayName("Kafka 알림: 주문이 아직 처리 중(PROCESSING)이면 알림을 만들지 않고 나중에 다시 처리하도록 예외를 던진다")
+    void processNotification_defersProcessingOrder() {
+        when(orderClient.getOrderInfo(any())).thenReturn(new OrderSlackDto(3L, "빠른 배송", "PROCESSING"));
+
+        assertThatThrownBy(() -> slackService(productionFactory()).processNotification(delivery(), "event-processing"))
+                .isInstanceOf(OrderNotReadyException.class)
+                .satisfies(e -> assertThat(TransientFailures.isTransient(e)).isTrue());
 
         verify(slackClient, never()).sendSlackMessage(anyString(), any());
         verify(slackRepository, never()).save(any(Slack.class));
