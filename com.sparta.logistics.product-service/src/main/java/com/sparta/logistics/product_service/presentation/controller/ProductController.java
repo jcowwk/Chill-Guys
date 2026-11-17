@@ -9,6 +9,7 @@ import com.sparta.logistics.product_service.application.dto.response.ProductSear
 import com.sparta.logistics.product_service.application.dto.response.ProductUpdateResponseDto;
 import com.sparta.logistics.product_service.application.dto.response.StockUpdateResponseDto;
 import com.sparta.logistics.product_service.application.service.ProductService;
+import com.sparta.logistics.product_service.application.service.StockService;
 import java.util.UUID;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
@@ -18,9 +19,11 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping({"/api/products"})
 public class ProductController {
     private final ProductService productService;
+    private final StockService stockService;
 
-    public ProductController(ProductService productService) {
+    public ProductController(ProductService productService, StockService stockService) {
         this.productService = productService;
+        this.stockService = stockService;
     }
 
     @PostMapping
@@ -55,14 +58,20 @@ public class ProductController {
 
     @PostMapping({"/{productId}/decrease-stock"})
     public ResponseEntity<StockUpdateResponseDto> decreaseStock(@PathVariable UUID productId, @RequestBody ProductStockRequestDto requestDto) {
-        StockUpdateResponseDto response = this.productService.reduceStock(productId, requestDto.getQuantity());
+        StockUpdateResponseDto response = this.stockService.decrease(productId, requestDto.getQuantity(), requestDto.getOrderId());
         return ResponseEntity.ok(response);
     }
 
     @PostMapping({"/{productId}/increase-stock"})
-    public ResponseEntity<StockUpdateResponseDto> increaseStock(@PathVariable UUID productId, @RequestParam Long quantity) {
-        StockUpdateResponseDto response = this.productService.addStock(productId, quantity);
+    public ResponseEntity<StockUpdateResponseDto> increaseStock(@PathVariable UUID productId, @RequestParam Long quantity,
+                                                                @RequestParam(required = false) UUID orderId) {
+        StockUpdateResponseDto response = this.stockService.restore(productId, quantity, orderId);
         return ResponseEntity.ok(response);
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<java.util.Map<String, String>> badRequest(IllegalArgumentException e) {
+        return ResponseEntity.badRequest().body(java.util.Map.of("message", e.getMessage()));
     }
 
     @GetMapping({"/{productId}/hub"})
