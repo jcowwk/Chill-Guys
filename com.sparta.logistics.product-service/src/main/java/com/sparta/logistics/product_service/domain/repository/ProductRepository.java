@@ -38,4 +38,8 @@ public interface ProductRepository extends JpaRepository<Product, UUID> {
     @Query("UPDATE Product p SET p.stock = p.stock + :quantity, p.updatedAt = CURRENT_TIMESTAMP " +
             "WHERE p.id = :productId")
     int increaseStock(@Param("productId") UUID productId, @Param("quantity") Long quantity);
+
+    /** 같은 상품의 재고 변동(차감/복구)을 한 줄로 세우기 위한 행 잠금 */
+    @Query(value = "SELECT id FROM p_product WHERE id = :productId FOR UPDATE", nativeQuery = true)
+    Optional<UUID> lockById(@Param("productId") UUID productId);
 }
