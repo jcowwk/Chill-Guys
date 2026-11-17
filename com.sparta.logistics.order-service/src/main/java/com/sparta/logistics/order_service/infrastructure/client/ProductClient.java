@@ -22,7 +22,8 @@ public interface ProductClient {
     @PostMapping("/api/products/{productId}/increase-stock")
     StockUpdateResponseDto increaseStock(
             @PathVariable UUID productId,
-            @RequestParam Long quantity
+            @RequestParam Long quantity,
+            @RequestParam(required = false) UUID orderId   // null 이면 보내지 않음 (기존 방식)
     );
 }
 
